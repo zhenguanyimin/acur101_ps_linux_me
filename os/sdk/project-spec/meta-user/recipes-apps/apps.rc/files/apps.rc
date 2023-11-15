@@ -1,0 +1,370 @@
+#!/bin/sh
+
+function check_download()
+{
+	local boot_partition=/dev/mmcblk0p1
+	local ota_partition=/dev/mmcblk0p2
+	local rootfs_partition=/dev/mmcblk0p3
+
+	local boot_dir=/run/media/mmcblk0p1
+	local ota_dir=/run/media/mmcblk0p2
+	local rootfs_dir=/run/media/mmcblk0p3
+
+	local update_files=(BOOT.BIN boot.scr system.dtb xen rootfs.cpio.gz Image firmware-header)
+	local update_flag=update.flag
+
+	if [ ! -d ${boot_dir} ]; then
+		mkdir -p ${boot_dir}
+	fi
+
+	if [ ! -d ${ota_dir} ]; then
+		mkdir -p ${ota_dir}
+	fi
+
+	if [ ! -d ${rootfs_dir} ]; then
+		mkdir -p ${rootfs_dir}
+	fi
+
+	echo "[OTA] mount boot/ota/rootfs direncts"
+	if mount ${boot_partition} ${boot_dir}; then 
+		echo "[OTA] boot partition ready"
+	else
+		echo "[OTA]format ${boot_partition} as FAT32 "
+		mkfs.vfat -F 32 ${boot_partition}
+		mount ${boot_partition} ${boot_dir}
+	fi
+
+	if mount ${ota_partition} ${ota_dir}; then
+		echo "[OTA] OTA partition ready"
+	else
+		echo "[OTA]format ${ota_partition} as FAT32 "
+		mkfs.vfat -F 32 ${ota_partition}
+		mount ${ota_partition} ${ota_dir}
+	fi
+	
+	if [ -e ${ota_dir}/firmware/rootfs.cpio.gz ]; then
+		if mount ${rootfs_partition} ${rootfs_dir}; then
+			echo "[OTA] rootfs partition ready"
+		else
+			echo "[OTA]format ${rootfs_partition} as ext4 "
+			mkfs.ext4 ${rootfs_partition}
+			mount ${rootfs_partition} ${rootfs_dir}
+		fi
+	else 
+		rootfs_dir=/
+	fi
+
+	if [ ! -e ${ota_dir}/${update_flag} ]; then
+		echo "[OTA]no exist ${update_flag}, nothing to do"
+		return 0
+	fi
+
+	if [ ! -d ${ota_dir}/firmware ]; then 
+		echo "[OTA] no firmware fond in OTA partition "
+		rm ${ota_dir}/${update_flag} -f
+		return 0
+	fi
+	
+	echo "[OTA]start update files..."
+	for i in ${update_files[*]}; do
+		if [ -e ${ota_dir}/firmware/${i} ]; then
+			echo "[OTA] copy ${ota_dir}/firmware/${i} to ${boot_dir}/${i} " 
+			cp ${ota_dir}/firmware/${i} ${boot_dir}/${i} -f 
+		fi
+	done
+
+	if [ -e ${ota_dir}/firmware/rootfs.cpio.gz ]; then
+		echo "[OTA] decompress rootfs...."
+		rm ${rootfs_dir}/* -rf 
+		cp ${ota_dir}/firmware/rootfs.cpio.gz ${rootfs_dir}/ 
+		cd ${rootfs_dir}/
+		gzip -d rootfs.cpio.gz
+		cpio -i < rootfs.cpio
+		cd -
+		echo "[OTA] decompress rootfs done"
+	fi
+
+	if [ -e ${ota_dir}/firmware/app.tar.gz ]; then
+		echo "[OTA] decompress app files..."
+		tar zxf ${ota_dir}/firmware/app.tar.gz -C ${rootfs_dir}
+		if [ "$?" == 0 ] ; then 
+			echo "[OTA] decompress app files done" 
+		else 
+			echo "[OTA] decompress app files error!!"
+		fi
+	fi
+
+	echo "[OTA] complete! reboot..."
+	rm ${ota_dir}/${update_flag} 
+#	rm ${ota_dir}/firmware -rf
+	reboot
+}
+
+function setup_gpio()
+{
+	#for gpio, 
+	#param: direction: in/out
+	#param: value: 0/1
+	
+	local gpio=/sys/class/gpio
+	local ln_gpio=/run/gpio
+	
+	if [ -d ${gpio}/gpiochip318 ]; then 
+		for i in {320..333}; do
+			echo ${i} > ${gpio}/export 
+		done
+
+		mkdir -p ${ln_gpio}/FPGA_TMP_INT
+		ln -sf ${gpio}/gpio320/value ${ln_gpio}/FPGA_TMP_INT/value
+		ln -sf ${gpio}/gpio320/direction ${ln_gpio}/FPGA_TMP_INT/direction
+
+		mkdir -p ${ln_gpio}/BAT_PLL_ADC_INT
+		ln -sf ${gpio}/gpio321/value ${ln_gpio}/BAT_PLL_ADC_INT/value
+		ln -sf ${gpio}/gpio321/direction ${ln_gpio}/BAT_PLL_ADC_INT/direction
+
+		mkdir -p ${ln_gpio}/RS232_EN
+		ln -sf ${gpio}/gpio325/value ${ln_gpio}/RS232_EN/value
+		ln -sf ${gpio}/gpio325/direction ${ln_gpio}/RS232_EN/direction
+
+		mkdir -p ${ln_gpio}/SRC5V3_EN
+		ln -sf ${gpio}/gpio326/value ${ln_gpio}/SRC5V3_EN/value
+		ln -sf ${gpio}/gpio326/direction ${ln_gpio}/SRC5V3_EN/direction
+
+		mkdir -p ${ln_gpio}/RX_1V9_EN
+		ln -sf ${gpio}/gpio327/value ${ln_gpio}/RX_1V9_EN/value
+		ln -sf ${gpio}/gpio327/direction ${ln_gpio}/RX_1V9_EN/direction
+
+		mkdir -p ${ln_gpio}/RX_1V8A_EN
+		ln -sf ${gpio}/gpio328/value ${ln_gpio}/RX_1V8A_EN/value
+		ln -sf ${gpio}/gpio328/direction ${ln_gpio}/RX_1V8A_EN/direction
+
+		mkdir -p ${ln_gpio}/RX_1V8B_EN
+		ln -sf ${gpio}/gpio329/value ${ln_gpio}/RX_1V8B_EN/value
+		ln -sf ${gpio}/gpio329/direction ${ln_gpio}/RX_1V8B_EN/direction
+
+		mkdir -p ${ln_gpio}/TX_2V1B_EN
+		ln -sf ${gpio}/gpio330/value ${ln_gpio}/TX_2V1B_EN/value
+		ln -sf ${gpio}/gpio330/direction ${ln_gpio}/TX_2V1B_EN/direction
+
+		mkdir -p ${ln_gpio}/TX_2V1A_EN
+		ln -sf ${gpio}/gpio331/value ${ln_gpio}/TX_2V1A_EN/value
+		ln -sf ${gpio}/gpio331/direction ${ln_gpio}/TX_2V1A_EN/direction
+		
+		mkdir -p ${ln_gpio}/TX_1V9_EN
+		ln -sf ${gpio}/gpio332/value ${ln_gpio}/TX_1V9_EN/value
+		ln -sf ${gpio}/gpio332/direction ${ln_gpio}/TX_1V9_EN/direction
+	fi
+
+	if [ -d ${gpio}/gpiochip302 ]; then 
+		echo 308 > ${gpio}/export
+		mkdir -p ${ln_gpio}/ADC_RESET
+		ln -sf ${gpio}/gpio308/value ${ln_gpio}/ADC_RESET/value
+		ln -sf ${gpio}/gpio308/direction ${ln_gpio}/ADC_RESET/direction
+	fi
+}
+
+function setup_wifi()
+{
+	#insmod ko
+	insmod /lib/modules/aw-cm256sm/compat.ko
+	insmod /lib/modules/aw-cm256sm/cfg80211.ko
+	insmod /lib/modules/aw-cm256sm/brcmutil.ko
+	insmod /lib/modules/aw-cm256sm/brcmfmac.ko
+}
+
+
+function setup_bt()
+{
+    local gpio=/sys/class/gpio
+    local uart_dev=/dev/ttyUL3
+
+    #gpio BT_REG_ON
+    echo 314 > ${gpio}/export
+    echo out > ${gpio}/gpio314/direction 
+    echo 0 > ${gpio}/gpio314/value
+    usleep 100000
+    echo 1 > ${gpio}/gpio314/value
+    usleep 100000
+
+    #BT CTS and RTS, set to low for enable
+    echo 423 > ${gpio}/export
+    echo out > ${gpio}/gpio423/direction
+    echo 424 > ${gpio}/export
+    echo out > ${gpio}/gpio424/direction
+    echo 0 > ${gpio}/gpio423/value
+    echo 0 > ${gpio}/gpio424/value
+
+    #set uart as 115200
+    stty -F ${uart_dev} 115200
+
+    #load firmware, it will take a few tens of seconds
+    brcm_patchram_plus -d --no2bytes --patchram /lib/firmware/BCM4345C0.hcd ${uart_dev} > /dev/null
+
+    #attach to uart
+    hciattach ${uart_dev} any 115200 flow
+    
+    #enable 
+    hciconfig hci1 up
+}
+
+function setup_evo_rc()
+{
+    local gpio=/sys/class/gpio
+    local ln_gpio=/run/gpio
+
+    # USB 5V
+    echo 427 > ${gpio}/export
+    echo out > ${gpio}/gpio427/direction
+    echo 1 > ${gpio}/gpio427/active_low
+    echo 1 > ${gpio}/gpio427/value
+    mkdir -p ${ln_gpio}/USB_5V
+    ln -sf ${gpio}/gpio427/value ${ln_gpio}/USB_5V/value
+
+
+    # USBMUX OEN
+    echo 418 > ${gpio}/export
+    echo out > ${gpio}/gpio418/direction
+    echo 1 > ${gpio}/gpio418/active_low
+    echo 1 > ${gpio}/gpio418/value
+    mkdir -p ${ln_gpio}/USBMUX_OEN
+    ln -sf ${gpio}/gpio418/value ${ln_gpio}/USBMUX_OEN/value
+
+    # USB SEL
+    echo 419 > ${gpio}/export
+    echo out > ${gpio}/gpio419/direction
+    echo 1 > ${gpio}/gpio419/active_low
+    echo 1 > ${gpio}/gpio419/value
+    mkdir -p ${ln_gpio}/USB_SEL
+    ln -sf ${gpio}/gpio419/value ${ln_gpio}/USB_SEL/value
+
+    witd -i usb0 -p 23 -m witd -d 192.168.1.1 -s 192.168.1.10 > /var/log/witd.log 2>&1 &
+}
+
+function setup()
+{
+    echo "Start APP..."
+
+    local mtd_user="/run/media/mtd_user"
+    local mtd_dev="/dev/mtdblock1"
+    local mach_name="acur100"
+
+# mount QSPI flash partition
+	mkdir -p ${mtd_user}
+    if mount  ${mtd_dev} ${mtd_user}; then 
+		echo mtd for user exist
+	else
+		mkfs.fat -F 32 ${mtd_dev}
+		mount  ${mtd_dev} ${mtd_user}
+	fi
+
+# copy sn to boot partition for OTA
+    diff ${mtd_user}/sn /run/media/mmcblk0p1/sn > /dev/null
+    if [ $? != 0 ]; then
+            cp ${mtd_user}/sn /run/media/mmcblk0p1/sn -f
+    fi
+
+# set hostname
+    if [ -e ${mtd_user}/sn ]; then
+        read sn < ${mtd_user}/sn
+    fi
+    hostname "${mach_name}-${sn}"
+
+# set gpio map
+    setup_gpio
+
+    setup_wifi
+
+# load FPGA bit.bin and dtbo, some modules need it
+	if [ -e /home/root/acur101_fpga_*.bin ]; then 
+	    fpgautil -b /home/root/acur101_fpga_*.bin
+	else 
+	    fpgautil -b /lib/firmware/xilinx/base/acur101_fpga_*.bin
+	fi
+	
+    fpgautil -o /home/root/fpga_source_dts.dtb
+
+#    setup_bt
+    setup_evo_rc
+}
+
+function modules_powerup()
+{
+	echo out > /run/gpio/RX_1V8A_EN/direction
+	echo 1 > /run/gpio/RX_1V8A_EN/value
+	sleep 0.5
+	echo out > /run/gpio/RX_1V8B_EN/direction
+	echo 1 > /run/gpio/RX_1V8B_EN/value
+	sleep 0.5
+	echo out > /run/gpio/RX_1V9_EN/direction
+	echo 1 > /run/gpio/RX_1V9_EN/value
+	sleep 0.5
+	echo out > /run/gpio/TX_1V9_EN/direction
+	echo 1 > /run/gpio/TX_1V9_EN/value
+	sleep 0.5
+	echo out > /run/gpio/TX_2V1A_EN/direction
+	echo 1 > /run/gpio/TX_2V1A_EN/value
+	sleep 0.5
+	echo out > /run/gpio/TX_2V1B_EN/direction
+	echo 1 > /run/gpio/TX_2V1B_EN/value
+	sleep 0.5
+	echo out > /run/gpio/ADC_RESET/direction
+	echo 1 > /run/gpio/ADC_RESET/value
+	sleep 0.5
+	echo out > /run/gpio/ADC_RESET/direction
+	echo 0 > /run/gpio/ADC_RESET/value
+}
+
+function run_app()
+{
+	local filesize
+	local maxsize=$((10*1024*1024))
+	local logfile="/var/log/linux_app/log.txt"
+	
+	echo "run app"
+
+   ifconfig eth0 192.168.235.55 netmask 255.255.255.0 up
+#    fpgautil -b /lib/firmware/xilinx/base/top.bit.bin
+
+	modules_powerup
+
+	ulimit -c unlimited
+
+	mkdir -p /var/log/linux_app
+    if [ -e $logfile ] ; then
+        filesize=`ls -l $logfile | awk '{ print $5 }'`
+    else
+        filesize=$((0))
+    fi
+
+    if [ $filesize -gt $maxsize ] ;  then
+        rm $logfile -f
+    fi
+
+
+	echo "=================================" >> $logfile
+	echo `date` >> $logfile
+	echo "=================================" >> $logfile
+	if [ -e /home/root/simple-dcache.ko ]; then
+	insmod /home/root/simple-dcache.ko || true
+	fi
+	/home/root/linux_app.elf >>$logfile 2>&1 &
+}
+
+case "$1" in
+	start)
+		echo "Start app..."
+		check_download
+                setup
+		run_app
+		;;
+	stop)
+		echo "Stop, do nothing"
+		;;
+	restart)
+		;;
+	*)
+		echo "action \"$1\", do nothing"
+		;;
+esac
+
+

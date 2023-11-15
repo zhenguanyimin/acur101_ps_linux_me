@@ -1,0 +1,66 @@
+diff -upNr git.old/include/env_default.h git/include/env_default.h
+--- git.old/include/env_default.h	2023-07-06 17:26:12.595076528 +0800
++++ git/include/env_default.h	2023-07-08 15:33:16.475384523 +0800
+@@ -38,8 +38,60 @@ if test -e ${OTA_partition} download.fla
+ if fatinfo ${boot_partition} && test -e ${boot_partition} boot.scr && test -e ${boot_partition} system.dtb && test -e ${boot_partition} Image; \
+ then echo system file OK; else echo system file lost, start download...;setenv download 1;fi;\
+ if test -e ${OTA_partition} update.flag; then fatrm ${OTA_partition} download.flag; echo run update;run update_system;fi;\
+-if test -e ${OTA_partition} download.flag; then setenv download 1;setenv autoload 0;fi; if test ${download} -eq 1; then dhcp;fi;\
+-while test ${download} -eq 1; do device_discovery; OTA; if test -e ${OTA_partition} update.flag; then setenv download 0;else sleep 3;fi;done;\
++if test -e ${OTA_partition} download.flag; then setenv download 1;fi; \
++setenv fix_ip 0; \
++if test ${download} -eq 1; then \
++	setenv autoload 0; \
++	dhcp; \
++	if test ${ipaddr} -eq \"\"; then \
++		setenv fix_ip 1; \
++		setenv ipaddr 192.168.235.55; \
++		ping 192.168.235.99; \
++		if test $? -eq 0; then \
++			setenv serverip 192.168.235.99; \
++		else \
++			setenv serverip 192.168.235.88; \
++		fi; \
++	fi; \
++fi;\
++\
++while test ${download} -eq 1; do \
++	if test ${fix_ip} -eq 1; then \
++		echo seriver ip is ${serverip}; \
++	else \
++		setenv serverip 0.0.0.0 ; \
++		device_discovery; \
++		if test ${serverip} = 0.0.0.0 ; then \
++			ping 192.168.235.99; \
++			if test $? -eq 0; then \
++				setenv serverip 192.168.235.99 ; \
++			else \
++				ping 192.168.235.88; \
++				if test $? -eq 0; then \
++					setenv serverip 192.168.235.88 ; \
++				fi; \
++			fi; \
++		fi; \
++	fi; \
++	\
++	OTA; \
++	if test -e ${OTA_partition} update.flag; then  \
++		setenv download 0; \
++	else \
++		sleep 3; \
++		if test ${fix_ip} -eq 1; then \
++			ping 192.168.235.99; \
++			if test $? -eq 0; then \
++				setenv serverip 192.168.235.99; \
++			else \
++				ping 192.168.235.88; \
++				if test $? -eq 0; then \
++					setenv serverip 192.168.235.88; \
++				fi; \
++			fi;\
++		fi; \
++	fi;\
++done;\
+ if test -e ${OTA_partition} update.flag; then fatrm ${OTA_partition} download.flag; echo run update;run update_system;fi;\
+ "
+ 

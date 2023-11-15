@@ -1,0 +1,190 @@
+WIFI开发：
+https://community.infineon.com/t5/Resource-Library/Getting-started-on-Linux-Driver-Backporting-FMAC/ta-p/246053
+
+先安装yacc工具：sudo apt-get install bison, sudo apt-get install flext
+
+cd sdk
+在project-spec/meta-user/recipes-kernel/linux/linux-xlnx/bsp.cfg增加如下信息：
+CONFIG_CFG80211=m
+#     CONFIG_BCMDHD=n
+CONFIG_ASYMMETRIC_KEY_TYPE=y
+CONFIG_ASYMMETRIC_PUBLIC_KEY_SUBTYPE=y
+CONFIG_X509_CERTIFICATE_PARSER=y
+CONFIG_PKCS7_MESSAGE_PARSER=y
+petalinux-build -c kernel -x compile -f
+
+cd ../cypress-backports-v5.15.58-2023_0222-module-src/v5.15.58-backports
+生成.config
+make KLIB=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source KLIB_BUILD=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+gitAUTOINC+19984dd147-r0/linux-zynqmp_generic-standard-build defconfig-brcmfmac
+编译驱动ko
+make KLIB=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source KLIB_BUILD=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+gitAUTOINC+19984dd147-r0/linux-zynqmp_generic-standard-build ARCH=arm64 CROSS_COMPILE=/opt/xilinx_linux/recipe-sysroot-native/usr/bin/aarch64-xilinx-linux/aarch64-xilinx-linux- modules
+
+存放对应的firmware:
+在/lib/firmware下新建文件夹cypress
+将cyfmac43455-sdio.bin复制到/lib/firmware/cypress/下，并修改名字为：cyfmac43455-sdio.xlnx,zynqmp.bin
+将cyfmac43455-sdio.clm_blob复制到/lib/firmware/cypress/下
+下载regulatory.db和regulatory.db.p7s到lib/firmware下。这两个是用于校验签名的
+
+给WIFI模块使能：设置WIFI_ON为高，即为：
+cd /sys/class/gpio
+echo 315 ＞export
+cd gpio315
+echo out > direction
+echo 1 > value
+目前存在第一次使能后，sdio无法识别，需要在开机之前保持该IO为高才能正常。原因不明。可通过reboot指令，重启系统，这样，这个IO的状态就会保持了。
+正常时，可通过/sys/class/mmc/devices/mmc1查到该SDIO设备，或者通过/sys/kernel/debug/mmc1/ios查询到当前的SDIO的参数
+
+加载驱动：按如下顺序加载
+insmod compat.ko
+insmod cfg80211.ko
+insmod brcmutil.ko
+insmod brcmfmac.ko
+
+加载成功后，会出现wlan0的网卡，通过ifconfig wlan0 up来使能它
+
+使用wifi
+通过petalinux-config -c rootfs，打开wpa_supplicant、wpa_cli、udhcpc的编译。其中wpa是用于配网的，udhcpc是动态IP申请的client.
+
+Wpa_supplicant -i wlan0 -D nl80211 -c /etc/wpa_supplicant.conf -B 
+
+
+
+遇到的问题：
+问题1：
+cc -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer   -c -o conf.o conf.c
+lex -ozconf.lex.c -L zconf.l
+byacc   -o zconf.tab.c -t -l  zconf.y
+byacc: e - line 97 of "zconf.y", syntax error
+%destructor {
+^
+Makefile:20: recipe for target 'zconf.tab.c' failed
+make[2]: *** [zconf.tab.c] Error 1
+Makefile.real:41: recipe for target 'defconfig-brcmfmac' failed
+make[1]: *** [defconfig-brcmfmac] Error 2
+Makefile:40: recipe for target 'defconfig-brcmfmac' failed
+make: *** [defconfig-brcmfmac] Error 2
+原因是当前的yacc版本不支持这种语法，安装bison工具。https://stackoverflow.com/questions/50794051/ubuntu-byacc-btyacc-syntax-error
+
+问题2：
+a22804@autel-Precision-7920-Tower:~/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports$ make KLIB=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source KLIB_BUILD=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+gitAUTOINC+19984dd147-r0/linux-zynqmp_generic-standard-build  modules
+make[4]: 'conf' is up to date.
+#
+# configuration written to .config
+#
+Building backport-include/backport/autoconf.h ... done.
+warning: the compiler differs from the one used to build the kernel
+  The kernel was built by: aarch64-xilinx-linux-gcc (GCC) 11.2.0
+  You are using:           gcc (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0
+  CC [M]  /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat/main.o
+In file included from <command-line>:0:0:
+/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source/include/linux/compiler_types.h:99:10: fatal error: asm/compiler.h: No such file or directory
+ #include <asm/compiler.h>
+          ^~~~~~~~~~~~~~~~
+compilation terminated.
+/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source/scripts/Makefile.build:277: recipe for target '/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat/main.o' failed
+make[5]: *** [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat/main.o] Error 1
+/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source/scripts/Makefile.build:540: recipe for target '/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat' failed
+make[4]: *** [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat] Error 2
+/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source/Makefile:1868: recipe for target '/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports' failed
+make[3]: *** [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports] Error 2
+Makefile.build:13: recipe for target 'modules' failed
+make[2]: *** [modules] Error 2
+Makefile.real:88: recipe for target 'modules' failed
+make[1]: *** [modules] Error 2
+Makefile:40: recipe for target 'modules' failed
+make: *** [modules] Error 2
+原因：不支持默认的编译arch和编译器，在make中指定ARCH=xxx CROSS_COMPILE=xxx， 再进行编译
+
+问题3：
+  CC [M]  /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/wext-sme.o
+  GEN     /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/shipped-certs.c
+  CC [M]  /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/shipped-certs.o
+  LD [M]  /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.o
+WARNING: Symbol version dump "Module.symvers" is missing.
+         Modules may not have dependencies or modversions.
+         You may get many unresolved symbol warnings.
+  MODPOST /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/Module.symvers
+WARNING: modpost: "register_netdevice" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "synchronize_net" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "flush_work" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "system_wq" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "kmalloc_caches" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "__kmalloc" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "rfkill_set_sw_state" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "get_net_ns_by_fd" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "register_pernet_device" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: "system_power_efficient_wq" [/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/net/wireless/cfg80211.ko] undefined!
+WARNING: modpost: suppressed 387 unresolved symbol warnings because there were too many)
+  CC [M]  /home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat/compat.mod.o
+make[5]: *** No rule to make target 'scripts/module.lds', needed by '/home/a22804/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports/compat/compat.ko'.  Stop.
+/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source/scripts/Makefile.modpost:140: recipe for target '__modpost' failed
+make[4]: *** [__modpost] Error 2
+/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source/Makefile:1783: recipe for target 'modules' failed
+make[3]: *** [modules] Error 2
+Makefile.build:13: recipe for target 'modules' failed
+make[2]: *** [modules] Error 2
+Makefile.real:88: recipe for target 'modules' failed
+make[1]: *** [modules] Error 2
+Makefile:40: recipe for target 'modules' failed
+make: *** [modules] Error 2
+
+原因：内核的build目录下缺少Module.symvers文件，可以通过petalinux提供的编译module的方式，先编译一下module, 即petalinux-build -c cm256-compat, 然后就可以生成了。网上是通过make scripts来生成的，但是在petalinux中不适用。
+
+问题4：
+root@acur100-:~# ./insmodko.sh
+root@acur100-:~# dmesg | tail
+[    9.286163] audit: type=1006 audit(1637342373.227:2): pid=712 uid=0 old-auid=4294967295 auid=0 tty=(none) old-ses=4294967295 ses=1 res=1
+[    9.292894] audit: type=1300 audit(1637342373.227:2): arch=c00000b7 syscall=64 success=yes exit=1 a0=8 a1=fffff07645f0 a2=1 a3=ffff9d7d86b0 items=0 ppid=1 pid=712 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=1 comm="(systemd)" exe="/lib/systemd/systemd" key=(null)
+[    9.319213] audit: type=1327 audit(1637342373.227:2): proctitle="(systemd)"
+[   12.312827] macb ff0e0000.ethernet eth0: Link is Up - 100Mbps/Full - flow control off
+[ 1758.745534] Loading modules backported from Linux version v5.15.58-2023_0222-0-gd4d1a61163b5
+[ 1758.748443] Backport generated by backports.git v5.15.58-1-0-g42a95ce7
+[ 1758.828963] cfg80211: Loading compiled-in X.509 certificates for regulatory database
+[ 1758.952429] cfg80211: Loaded X.509 cert 'sforshee: 00b28ddf47aef9cea7'
+[ 1758.954229] platform regulatory.0: Direct firmware load for regulatory.db failed with error -2
+[ 1758.962127] cfg80211: failed to load regulatory.db
+
+问题原因：缺少regulatory.db，下载后放入/lib/firmware中即可
+https://bbs.archlinux.org/viewtopic.php?id=236460
+
+问题：
+a22804@autel-Precision-7920-Tower:~/wifi/cypress-fmac-v5.15.58-2023_0222/v5.15.58-backports$ make KLIB=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work-shared/zynqmp-generic/kernel-source KLIB_BUILD=/home/a22804/git_linux_v4/acur101_ps_linux/sdk/build/tmp/work/zynqmp_generic-xilinx-linux/linux-xlnx/5.15.36+gitAUTOINC+19984dd147-r0/linux-zynqmp_generic-standard-build ARCH=arm64 CROSS_COMPILE=/opt/xilinx_linux/recipe-sysroot-native/usr/bin/aarch64-xilinx-linux/aarch64-xilinx-linux- modules
+/--------------
+| Your kernel headers are incomplete/not installed.
+| Please install kernel headers, including a .config
+| file or use the KLIB/KLIB_BUILD make variables to
+| set the kernel to build against, e.g.
+|   make KLIB=/lib/modules/3.1.7/
+| to compile/install for the installed kernel 3.1.7
+| (that isn't currently running.)
+\--
+Makefile:40: recipe for target 'modules' failed
+make: *** [modules] Error 1
+问题原因：所指定的路径不存在，可编译petalinux-build -c kernel -x compile -f 
+
+
+问题：
+
+root@acur100-:~#
+root@acur100-:~# ./insmodko.sh
+[   83.728651] Loading modules backported from Linux version v5.15.58-2023_0222-0-gd4d1a61163b5
+[   83.731541] Backport generated by backports.git v5.15.58-1-0-g42a95ce7
+[   83.811844] cfg80211: Loading compiled-in X.509 certificates for regulatory database
+[   83.935359] cfg80211: Loaded X.509 cert 'sforshee: 00b28ddf47aef9cea7'
+[   84.008961] brcmfmac_module_init[589]
+[   84.009205] brcmfmac_module_init[596]
+[   84.010816] brcmfmac_module_init[601]
+[   84.014562] brcmf_core_init[1584]
+[   84.017928] brcmf_sdio_register[1266]
+[   84.021748] brcmf_ops_sdio_probe[1043]
+[   84.025994] brcmf_ops_sdio_probe[1043]
+[   84.032636] brcmfmac: brcmf_fw_alloc_request: using cypress/cyfmac43455-sdio for chip BCM4345/6
+[   84.038070] brcmf_sdio_register[1269]ret:0
+[   84.042151] brcmf_core_init[1590]
+[   84.045519] brcmf_core_init[1596]
+[   84.048893] brcmfmac_module_init[612]
+root@acur100-:~# [   84.057551] brcmfmac: brcmf_fw_request_firmware: no board-specific nvram available (ret=-2), device will use cypress/cyfmac43455-sdio.txt
+[   85.076417] brcmfmac: brcmf_sdio_htclk: HT Avail timeout (1000000): clkctl 0x50
+
+问题原因：参数文件不对
+

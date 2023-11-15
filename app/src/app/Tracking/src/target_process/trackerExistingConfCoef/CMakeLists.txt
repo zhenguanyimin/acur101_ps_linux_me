@@ -1,0 +1,13 @@
+#
+#
+#aux_source_directory(. DIR_SCRS)
+
+add_subdirectory(src)
+
+#aux_source_directory(. DIR_LIB_SRCS)
+#add_library(trackerExistingConfCoef ${DIR_LIB_SRCS})
+set (TRACKEREXISTINGCONFCOEF_LIBS
+	${TRACKEREXISTINGCONFCOEF_SRC_LIBS}
+	PARENT_SCOPE)
+
+

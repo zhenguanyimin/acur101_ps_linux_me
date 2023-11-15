@@ -1,0 +1,517 @@
+Cypress Wifi Linux FMAC Driver Package - README
+===============================================
+
+Package Version
+---------------
+v5.15.58-2023_0222
+
+
+Release Date
+------------
+2023-02-21
+
+
+Description
+-----------
+This is Cypress's Linux brcmfmac driver and firmware support package.
+Brcmfmac is an open-source driver project.
+
+Files in this release:
+* Backports package (cypress-backports-v5.15.58-2023_0222-module-src.tar.gz)
+* Firmware/clm_blob files (cypress-firmware-v5.15.58-2023_0222.tar.gz)
+* Cypress fmac patch files (cypress-patch-v5.15.58-2023_0222.tar.gz)
+* Device tree files (cypress-devicetree-2023-02-21.tar.gz)
+* hostapd/wpa_supplicant patch (cypress-hostap_2_10-2023_0222.tar.gz)
+* Cirrent Agent (cypress-cirrent-1.60.tar.gz)
+* Documents (docs/)
+* README
+
+For more information about the Linux brcmfmac project, see:
+
+[brcm80211 Wireless Wiki](https://wireless.wiki.kernel.org/en/users/drivers/brcm80211)
+
+For more information about Linux backports project, see:
+
+[Linux Backports Project](https://backports.wiki.kernel.org/index.php/Main_Page)
+
+11AX chips firmware
+-------------------
+* By default firmware cyfmac55572-pcie.trxse is used
+* If your chip is 55571, 55573 please also use cyfmac55572-pcie.trxse
+
+Test Environment
+----------------
+* ARM (MCIMX6SX-SDB)
+   * Linux v4.14.78 (NXP imx_4.14.78_1.0.0_ga)
+   * backports
+* x86
+   * Linux v4.12
+   * backports
+
+
+Instructions
+------------
+The patch files in this package are based on Linux v5.15.58, so older kernels
+need use backports package. Below are examples of how to use this package
+with an older kernel or linux-stable v5.15.58.
+
+### Using backports with an older kernel (v3.10+)
+
+Linux kernel image and cypress driver modules need to be built separately.
+Below is the example of using with iMX Linux v4.14.78:
+
+#### Build the kernel image
+```bash
+#1. Have the BSP kernel source available
+   git clone https://source.codeaurora.org/external/imx/linux-imx
+   cd linux-imx
+   git checkout imx_4.14.78_1.0.0_ga
+#2. Set up build environment and kernel configuration
+   source /opt/poky/1.8/environment-setup-cortexa7hf-vfp-neon-poky-linux-gnueabi
+   make imx_v7_defconfig
+#3. Edit .config and build cfg80211 as module
+#     CONFIG_CFG80211=m
+#     CONFIG_BCMDHD=n
+#3.1 Disable cfg80211 regdb for the kernel above v5.4.18
+#     CONFIG_CFG80211_REQUIRE_SIGNED_REGDB=n
+#     CONFIG_CFG80211_USE_KERNEL_REGDB_KEYS=n
+#4. Enable below configs in .config
+#     CONFIG_ASYMMETRIC_KEY_TYPE=y
+#     CONFIG_ASYMMETRIC_PUBLIC_KEY_SUBTYPE=y
+#     CONFIG_X509_CERTIFICATE_PARSER=y
+#     CONFIG_PKCS7_MESSAGE_PARSER=y
+#5. Build the Linux kernel image
+   make oldconfig
+   make zImage -j 8
+#6. The kernel image is available here
+   arch/arm/boot/zImage
+```
+
+#### Build the cypress driver/backports modules
+```bash
+#1. Untar the Cypress backports package
+    tar zxvf cypress-backports-*.tar.gz
+    cd v5.15.58-backports
+#2. (Native) compile local tools and generate .config (in a new terminal
+#   without sourcing Yoctol toolchain settings)
+    bash
+    MY_KERNEL=<the 4.14.78 kernel path>
+    make KLIB=$MY_KERNEL KLIB_BUILD=$MY_KERNEL defconfig-brcmfmac
+#3. (Cross) compile kernel modules
+    source /opt/poky/1.8/environment-setup-cortexa7hf-vfp-neon-poky-linux-gnueabi
+    make KLIB=$MY_KERNEL KLIB_BUILD=$MY_KERNEL modules
+#4. The kernel modules are available here
+#      compat/compat.ko
+#      net/wireless/cfg80211.ko
+#      drivers/net/wireless/broadcom/brcm80211/brcmutil/brcmutil.ko
+#      drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko
+```
+
+#### Device tree
+```bash
+#1. Untar the cypress devicetree package
+    tar zxvf cypress-devicetree-*.tar.gz
+#2. Find your board's dtb file, for example
+#      cypress-devicetree/iMX6SX/4.14.78/imx6sx-sdb-btwifi-fmac.dtb
+```
+Note: If your board's dtb is not available in the cypress devicetree
+      package, please refer to the available dts/dtsi files and create
+      them for your board, then compile them for the dtb file. iMX dts
+      files are located in linux-imx/arch/arm/boot/dts/ folder of the
+      Linux kernel tree. Below command compiles a dtb file
+```bash
+    make ARCH=arm <devicetree name>.dtb
+```
+
+#### Load the cypress wifi driver
+```bash
+#1. Copy your boards's zImage and dtb files to the target board
+    bash
+    TARGET_IP=<target board IP>
+    scp <dtb file> root@$TARGET_IP:/run/media/mmcblk1p1/cy.dtb
+    scp <zImage file> root@$TARGET_IP:/run/media/mmcblk1p1/zImage_cy
+#2. Copy firmware files to the target board
+    tar zxvf cypress-firmware*.tar.gz
+    scp firmware/* root@$TARGET_IP:/lib/firmware/cypress
+#3. Copy your nvram file (from board vendor) to the target board and rename it
+    scp <nvram file> root@$TARGET_IP:/lib/firmware/cypress/<fw name>.txt
+#      (fw name is your chip's *.bin file name in the cypress firmware package)
+#4. Copy cypress kernel modules to the target board
+    scp <module files> root@$TARGET_IP:/lib/modules/4.14.78
+#5. (iMX console) Press ctrl-c after target boot to enter u-boot and configure it
+#   for the new zImage/dtb files
+   env print image fdt_file
+   setenv image zImage_cy
+   setenv fdt_file cy.dtb
+   saveenv
+   env print image fdt_file
+   reset
+#6. (iMX console) Boot up the target board with the above zImage and insmod cypress modules
+    insmod /lib/modules/4.14.78/compat.ko
+    insmod /lib/modules/4.14.78/cfg80211.ko
+    insmod /lib/modules/4.14.78/brcmutil.ko
+    insmod /lib/modules/4.14.78/brcmfmac.ko
+```
+Note: More on fmac driver [firmware/nvram install](https://wireless.wiki.kernel.org/en/users/drivers/brcm80211#firmware_installation1)
+
+### Using Linux Stable v5.15.58
+```bash
+#1. Download Linux stable kernel source
+    wget https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/snapshot/linux-5.15.58.tar.gz
+    tar zxvf linux-5.15.58.tar.gz
+#2. In Linux root folder, untar/apply cypress patches with below bash commands
+    cd linux-5.15.58
+    tar zxvf cypress-patch*.tar.gz
+    for i in cypress-patch/*.patch; do patch -p1 < $i; done
+#3. Set kernel .config and enable below options, then compile kernel image
+#      CONFIG_BRCMUTIL=y
+#      CONFIG_BRCMFMAC=y
+#      CONFIG_BRCMFMAC_SDIO=y
+#      CONFIG_BRCMFMAC_PROTO_BCDC=y
+#      CONFIG_BRCMFMAC_PCIE=y
+#      CONFIG_BRCMFMAC_PROTO_MSGBUF=y
+#4. (optional) Backup original firmware files
+    cp /lib/firmware/cypress /lib/firmware/cypress-bak -r
+#5. Update firmware files in /lib/firmware/cypress
+    tar zxvf cypress-firmware*.tar.gz
+    cp firmware/* /lib/firmware/cypress
+#6. Boot the system with the new kernel image
+```
+
+
+Instructions - Hostap
+---------------------
+The patch files in this package are based on Hostap commit cff80b4f7d3c.
+Below is an example of how to apply these files and build
+hostapd/wpa_supplicant binaries.
+
+### Build the hostapd/wpa_supplicant binaries
+```bash
+#1. Download Hostap source and change the HEAD to commit cff80b4f7d3c
+    git clone git://w1.fi/hostap.git
+    cd hostap
+    git checkout cff80b4f7d3c
+#2. In Hostap root folder, untar/apply cypress patches with below bash commands
+    tar zxvf cypress-hostap_2_10-*.tar.gz
+    for i in cypress-hostap_2_10/*.patch; do patch -p1 < $i; done
+#3. (Hostapd) in hostapd root directory, have a build time configuration file,
+#   .config, and build hostapd and hostapd_cli
+    cd hostapd
+    cp defconfig_base .config
+    make clean
+    make
+#4. (Wpa_supplicant) in wpa_supplicant root directory, have a build time
+#   configuration file, .config, and build wpa_supplicant and wpa_cli
+    cd wpa_supplicant
+    cp defconfig_base .config
+    make clean
+    make
+#5. The binaries are available here
+#     hostap/hostapd/hostapd
+#     hostap/hostapd/hostapd_cli
+#     hostap/wpa_supplicant/wpa_supplicant
+#     hostap/wpa_supplicant/wpa_cli
+```
+Note: Set CONFIG_SAE=y in .config to enable WPA3-Personal (SAE) support.
+      5459x and 43012 only supports sae_pwe 1 or 2 in hostapd.conf and wpa_supplicant.conf
+
+
+Instructions - Cirrent Agent
+----------------------------
+
+The Cirrent Agent with IoT Network Intelligence support has been pre-compiled
+for easy installation on platforms with armhf architecture.
+
+### Install the Cirrent Agent files
+
+```bash
+#1. Untar the Cirrent Agent installation package
+    tar zxvf cypress-cirrent-1.60.tar.gz
+#2. Install the required files to the root / directory
+    cp -av cypress-cirrent/* /
+#3. Edit and uncomment PROVISION_CRED from the /etc/default/cirrent file with
+#   credentials from https://console.cirrent.com
+#4. Enable the Cirrent Agent to start on boot and reboot with Systemd init
+    systemctl enable cirrent
+#   or with SysV init
+    update-rc.d cirrent defaults
+    reboot
+```
+
+For more information on using the Cirrent Agent, please visit
+https://support.cirrent.com
+
+
+Cypress Wifi Linux FMAC Driver Package - Release Notes
+======================================================
+
+FMAC Driver Changes
+-------------------
+* SDIO (001, 006, 011, 039-041, 059, 061, 080)
+* SoftAP (002, 042-043, 060, 064, 071, 078)
+* Generic fixes (003, 014, 017, 045, 050-051, 053-055, 067-068, 070, 072-075)
+* Wake on Wireless LAN (005, 012)
+* Power saving (007, 010, 015, 077)
+* USB (008-009, 030)
+* Thermal throttling (013)
+* 43570 (016)
+* 54591 (018, 032, 057)
+* RSDB (019, 021, 065-066)
+* PCIE (020, 052, 076)
+* Manufacturing (022, 023, 056, 081)
+* Roaming (024-029)
+* P2P (0031, 062, 069)
+* 43012 (033-035)
+* 4373 (036, 038)
+* Throughput enhancement (037)
+* ARP Offload (044)
+* DPP (046, 058)
+* Firmware/nvram (047, 063)
+* Data path (048)
+* Event handling (049)
+* WPA3 (079)
+
+
+FMAC Driver Patch List
+----------------------
+0001-non-upstream-add-sg-parameters-dts-parsing.patch [x]
+0002-brcmfmac-support-AP-isolation.patch
+0003-non-upstream-make-firmware-eap_restrict-a-module-par.patch [x]
+0004-non-upstream-support-wake-on-ping-packet.patch [x]
+0005-non-upstream-remove-WOWL-configuration-in-disconnect.patch [x]
+0006-non-upstream-make-setting-SDIO-workqueue-WQ_HIGHPRI-.patch [x]
+0007-non-upstream-avoid-network-disconnection-during-susp.patch [x]
+0008-non-upstream-Changes-to-improve-USB-Tx-throughput.patch [x]
+0009-brcmfmac-introduce-module-parameter-to-configure-def.patch
+0010-non-upstream-configure-wowl-parameters-in-suspend-fu.patch [x]
+0011-non-upstream-disable-command-decode-in-sdio_aos-for-.patch [x]
+0012-brcmfmac-increase-default-max-WOWL-patterns-to-16.patch
+0013-non-upstream-Enable-Process-and-forward-PHY_TEMP-eve.patch [x]
+0014-non-upstream-fix-continuous-802.1x-tx-pending-timeou.patch [x]
+0015-non-upstream-add-sleep-in-bus-suspend-and-cfg80211-r.patch [x]
+0016-brcmfmac-add-CYW43570-PCIE-device.patch
+0017-non-upstream-fix-scheduling-while-atomic-issue-when-.patch [x]
+0018-brcmfmac-Support-89459-pcie.patch
+0019-brcmfmac-Support-multiple-AP-interfaces-and-fix-STA-.patch
+0020-non-upstream-Support-custom-PCIE-BAR-window-size.patch [x]
+0021-brcmfmac-support-for-virtual-interface-creation-from.patch
+0022-brcmfmac-increase-dcmd-maximum-buffer-size.patch
+0023-brcmfmac-set-net-carrier-on-via-test-tool-for-AP-mod.patch
+0024-nl80211-add-authorized-flag-back-to-ROAM-event.patch
+0025-brcmfmac-set-authorized-flag-in-ROAM-event-for-offlo.patch
+0026-brcmfmac-set-authorized-flag-in-ROAM-event-for-PMK-c.patch
+0027-nl80211-add-authorized-flag-to-CONNECT-event.patch
+0028-brcmfmac-set-authorized-flag-in-CONNECT-event-for-PM.patch
+0029-brcmfmac-add-support-for-Opportunistic-Key-Caching.patch
+0030-brcmfmac-To-support-printing-USB-console-messages.patch
+0031-non-upstream-Fix-no-P2P-IE-in-probe-requests-issue.patch [x]
+0032-brcmfmac-add-54591-PCIE-device.patch
+0033-non-upstream-support-DS1-exit-firmware-re-download.patch [x]
+0034-non-upstream-fix-43012-insmod-after-rmmod-in-DS1-fai.patch [x]
+0035-non-upstream-fix-43012-driver-reload-failure-after-D.patch [x]
+0036-brcmfmac-reset-PMU-backplane-all-cores-in-CYW4373-du.patch
+0037-non-upstream-calling-skb_orphan-before-sending-skb-t.patch [x]
+0038-non-upstream-workaround-for-4373-USB-WMM-5.2.27-test.patch [x]
+0039-non-upstream-disable-command-decode-in-sdio_aos-for-.patch [x]
+0040-non-upstream-disable-command-decode-in-sdio_aos-for-.patch [x]
+0041-non-upstream-disable-command-decode-in-sdio_aos-for-.patch [x]
+0042-brcmfmac-support-the-forwarding-packet.patch
+0043-brcmfmac-add-a-variable-for-packet-forwarding-condit.patch
+0044-brcmfmac-don-t-allow-arp-nd-offload-to-be-enabled-if.patch
+0045-non-upstream-ignore-FW-BADARG-error-when-removing-no.patch [x]
+0046-brcmfmac-Support-DPP-feature.patch
+0047-brcmfmac-move-firmware-path-to-cypress-folder.patch
+0048-brcmfmac-add-support-for-sof-time-stammping-for-tx-p.patch
+0049-non-upstream-free-eventmask_msg-after-updating-event.patch [x]
+0050-brcmfmac-fix-invalid-address-access-when-enabling-SC.patch
+0051-brcmfmac-add-a-timer-to-read-console-periodically-in.patch
+0052-brcmfmac-return-error-when-getting-invalid-max_flowr.patch
+0053-brcmfmac-Fix-to-add-skb-free-for-TIM-update-info-whe.patch
+0054-brcmfmac-Fix-to-add-brcmf_clear_assoc_ies-when-rmmod.patch
+0055-brcmfmac-dump-dongle-memory-when-attaching-failed.patch
+0056-brcmfmac-update-address-mode-via-test-tool-for-AP-mo.patch
+0057-brcmfmac-load-54591-firmware-for-chip-ID-0x4355.patch
+0058-brcmfmac-Fix-interoperating-DPP-and-other-encryption.patch
+0059-brcmfmac-fix-SDIO-bus-errors-during-high-temp-tests.patch
+0060-brcmfmac-Add-dump_survey-cfg80211-ops-for-HostApd-Au.patch
+0061-revert-brcmfmac-set-state-of-hanger-slot-to-FREE-whe.patch
+0062-brcmfmac-correctly-remove-all-p2p-vif.patch
+0063-brcmfmac-fix-firmware-trap-while-dumping-obss-stats.patch
+0064-brcmfmac-add-creating-station-interface-support.patch
+0065-brcmfmac-support-station-interface-creation-version-.patch
+0066-brcmfmac-To-fix-crash-when-platform-does-not-contain.patch
+0067-brcmfmac-Remove-the-call-to-dtim_assoc-IOVAR.patch
+0068-brcmfmac-fix-CERT-P2P-5.1.10-failure.patch
+0069-brcmfmac-Fix-for-when-connect-request-is-not-success.patch
+0070-brcmfmac-Avoiding-Connection-delay.patch
+0071-non-upstream-Revert-brcm80211-select-WANT_DEV_COREDU.patch [x]
+0072-brcmfmac-Fix-connecting-enterprise-AP-failure.patch
+0073-brcmfmac-Fix-for-skbuf-allocation-failure-in-memory-.patch
+0074-brcmfmac-Update-SSID-of-hidden-AP-while-informing-it.patch
+0075-brcmfmac-Fix-PCIE-suspend-resume-issue.patch
+0076-brcmfmac-disable-mpc-when-power_save-is-disabled.patch
+0077-brcmfmac-Fix-authentication-latency-caused-by-OBSS-s.patch
+0078-brcmfmac-support-external-SAE-authentication-in-stat.patch
+0079-brcmfmac-fix-sdio-watchdog-timer-start-fail-issue.patch
+0080-brcmfmac-Frameburst-vendor-command-addition.patch
+0081-brcmfmac-add-support-for-CYW43439-SDIO-chipset.patch
+0082-brcmfmac-add-BT-shared-SDIO-support.patch
+0083-brcmfmac-add-CYW43439-SR-related-changes.patch
+0084-brcmfmac-add-support-for-CYW43439-with-blank-OTP.patch
+0085-brcmfmac-support-43439-Cypress-Vendor-and-Device-ID.patch
+0086-brcmfmac-fix-P2P-device-discovery-failure.patch
+0087-brcmfmac-Add-SDIO-verdor-device-id-for-CYW89459-in-h.patch
+0088-brcmfmac-Add-CYW89459-HW-ID-and-modify-sdio-F2-block.patch
+0089-brcmfmac-Fix-AP-interface-delete-issue.patch
+0090-brcmfmac-Revise-channel-info-for-WPA3-external-SAE.patch
+0091-brcmfmac-Fix-structure-size-for-WPA3-external-SAE.patch
+0092-brcmfmac-support-54590-54594-PCIe-device-id.patch
+0093-Revert-non-upstream-make-setting-SDIO-workqueue-WQ_H.patch [x]
+0094-brcmfmac-Set-SDIO-workqueue-as-WQ_HIGHPRI.patch [v5.15-rc1]
+0095-brcmfmac-revise-SoftAP-channel-setting.patch
+0096-brcmfmac-Optimize-CYW4373-SDIO-current.patch [v5.13-rc7]
+0097-brcmfmac-use-request_firmware_direct-for-loading-boa.patch
+0098-brcmfmac-enable-pmk-catching-for-ext-sae-wpa3-ap.patch
+0099-brcmfmac-fixes-CYW4373-SDIO-CMD53-error.patch
+0100-brcmfmac-add-PCIe-mailbox-support-for-core-revision-.patch
+0101-brcmfmac-add-support-for-TRX-firmware-download.patch
+0102-brcmfmac-add-Cypress-PCIe-vendor-ID.patch
+0103-brcmfmac-add-support-for-CYW55560-PCIe-chipset.patch
+0104-brcmfmac-add-bootloader-console-buffer-support-for-P.patch
+0105-brcmfmac-support-4373-pcie.patch
+0106-brcmfmac-extsae-supports-SAE-OKC-roam.patch
+0107-nl80211-add-roaming-offload-support.patch
+0108-brcm80211-add-FT-11r-OKC-roaming-offload-support.patch
+0109-brcmfmac-support-extsae-with-psk-1x-offloading.patch
+0110-Disable-out-of-band-device-wake-based-DeepSleep-Stat.patch
+0111-brcmfmac-Improve-the-delay-during-scan.patch
+0112-brcmfmac-skip-6G-oob-scan-report.patch
+0113-Revert-brcmfmac-Improve-the-delay-during-scan.patch
+0114-brcmfmac-Improve-the-delay-during-scan.patch
+0115-brcmfmac-add-FW-AP-selection-mod-param.patch
+0116-Changing-info-messages-under-debug-BRCMF_INFO_VAL.patch
+0117-revert-brcmfmac-Set-timeout-value-when-configuring-p.patch
+0118-brcmfmac-fixes-scan-invalid-channel-when-enable-host.patch
+0119-brcmfmac-do-not-disable-controller-in-apmode-stop.patch
+0120-brcmfmac-support-11ax-and-6G-band.patch
+0121-brcmfmac-fixes-invalid-channel-still-in-the-channel-.patch
+0122-non-upstream-Fix-lspci-not-enumerating-wifi-device-a.patch [x]
+0123-brcmfmac-support-signal-monitor-feature-for-wpa_supp.patch
+0124-brcmfmac-add-support-for-CYW55560-SDIO-chipset.patch
+0125-brcmfmac-Modified-Kconfig-help-format.patch
+0126-brcmfmac-Fix-incorrect-WARN_ON-causing-set_pmk-failu.patch
+0127-brcmfmac-report-cqm-rssi-event-based-on-rssi-change-.patch
+0128-brcmfmac-add-WPA3_AUTH_1X_SUITE_B_SHA384-related-sup.patch
+0129-non-upstream-Handle-the-6G-case-in-the-bw_cap-chansp.patch [x]
+0130-net-brcm80211-Fix-race-on-timer_add-in-wifi-driver.patch
+0131-Remove-WARN_ON-while-no-6g-bw_cap.patch
+0132-brcmfmac-update-the-statically-defined-HE-MAC-PHY-Ca.patch
+0133-brcmfmac-fix-set_pmk-warning-message.patch
+0134-brcmfmac-update-BIP-setting-and-wsec_info-for-GMAC-a.patch
+0135-brcmfmac-send-roam-request-when-supplicant-triggers-.patch
+0136-brcmfmac-send-BCNLOST_MSG-event-on-beacon-loss-for-s.patch
+0137-brcmfmac-trying-to-get-GCMP-cap-before-doing-set-it.patch
+0138-brcmfmac-update-firmware-loading-name-for-CY5557x.patch
+0139-brcmfmac-use-SR-core-id-to-decide-SR-capability-for-.patch
+0140-brcmfmac-SAP-mode-parsing-sae_h2e-setting-from-beaco.patch
+0141-brcmfmac-add-sanity-check-for-potential-underflow-an.patch
+0142-brcmfmac-Fixing-vulnerability.patch
+0143-brcmfmac-Implementing-set_bitrate_mask-cfg80211-ops-.patch
+0144-brcm80211-add-FT-PSK-roaming-offload-support.patch
+0145-brcmfmac-enable-6G-split-scanning-feature.patch
+0146-brcmfmac-set-HE-6GHz-capabilities-for-bring-up-SAP.patch
+0147-brcmfmac-add-interface-to-set-bsscolor-for-bring-up-.patch
+0148-non-upstream-add-IFX-vendor-OUI-file.patch [x]
+0149-non-upstream-adding-vendor_cmds-are-with-IFX_OUI.patch [x]
+0150-brcmfmac-introduce-a-module-parameter-to-disable-the.patch
+0151-brcmfmac-skip-6GHz-capab-registration-with-cfg80211-.patch
+0152-brcmfmac-set-HE-rate-only-if-HE-MCS-set-and-valid.patch
+0153-brcmfmac-remove-workaround-cause-the-FW-can-support-.patch
+0154-brcmfmac-ext_owe-supporting.patch
+0155-brcmfmac-Avoid-adding-two-sets-of-HE-Capab-and-Oper-.patch
+0156-non-upstream-Add-IFX-TWT-Offload-support.patch [x]
+0157-non-upstream-vendor-cmd-addition-for-wl-he-bsscolor.patch [x]
+0158-non-upstream-vendor-cmd-addition-for-wl-he-muedca_op.patch [x]
+0159-non-upstream-vendor-cmd-addition-for-wl-amsdu.patch [x]
+0160-non-upstream-vendor-cmd-addition-for-wl-ldpc_cap.patch [x]
+0161-non-upstream-Refine-TWT-code-for-checkpatch.patch [x]
+0162-cfg80211-fix-u8-overflow-in-cfg80211_update_notliste.patch
+0163-cfg80211-mac80211-reject-bad-MBSSID-elements.patch
+0164-cfg80211-fix-BSS-refcounting-bugs.patch
+0165-cfg80211-avoid-nontransmitted-BSS-list-corruption.patch
+0166-brcmfmac-Fix-potential-buffer-overflow-in-brcmf_fweh.patch
+0167-non-upstream-vendor-cmd-addition-for-wl-oce-enable.patch
+0168-non-upstream-vendor-cmd-addition-for-wl-randmac.patch
+0169-brcmfmac-compile-warning-fix.patch
+0170-Fix-invalid-RAM-address-warning-for-PCIE-platforms.patch
+0171-brcmfmac-Fix-dpp-very-low-tput-issue.patch
+0172-non-upstream-keep-IFX-license-header-for-non-upstrea.patch [x]
+0173-non-upstream-internal-sup-uses-join-command-to-send-.patch [x]
+0174-non-upstream-Supporting-IFX_vendor-commands-of-MBO.patch [x]
+0175-brcmfmac-Set-corresponding-cqm-event-handlers-based-.patch
+0176-non-upstream-isolate-power_save-off-and-mpc-0.patch [x]
+0177-brcmfmac-Add-NULL-checks-to-fix-multiple-NULL-pointe.patch
+0178-brcmfmac-fix-compiler-error.patch
+0179-non-upstream-supporting-giartrx-IFX-vendor-ID.patch [x]
+
+Note: [*] is the upstream tag containing the patch
+      [-] means under upstream review
+      [x] means no plan to upstream
+
+
+Hostap Patch List
+-----------------
+ * 0001-wpa_supplicant-Support-4-way-handshake-offload-for-F.patch
+ * 0002-wpa_supplicant-Notify-Neighbor-Report-for-driver-tri.patch
+ * 0003-nl80211-Report-connection-authorized-in-EVENT_ASSOC.patch
+ * 0004-wpa_supplicant-Add-PMKSA-cache-for-802.1X-4-way-hand.patch
+ * 0005-OpenSSL-Fix-build-with-OpenSSL-1.0.1.patch
+ * 0006-nl80211-Check-SAE-authentication-offload-support.patch
+ * 0007-SAE-Pass-SAE-password-on-connect-for-SAE-authenticat.patch
+ * 0008-nl80211-Support-4-way-handshake-offload-for-WPA-WPA2.patch
+ * 0009-AP-Support-4-way-handshake-offload-for-WPA-WPA2-PSK.patch
+ * 0010-nl80211-Support-SAE-authentication-offload-in-AP-mod.patch
+ * 0011-SAE-Support-SAE-authentication-offload-in-AP-mode.patch
+ * 0012-DPP-Do-more-condition-test-for-AKM-type-DPP-offload.patch
+ * 0013-non-upstream-defconfig_base-Add-Infineon-default-con.patch [x]
+ * 0014-CVE_2019_9501-Fix-to-check-Invalid-GTK-IE-length-in-.patch
+ * 0015-Add-CONFIG_WPA3_SAE_AUTH_EARLY_SET-flags-and-codes.patch
+ * 0016-SAE-Set-the-right-WPA-Versions-for-FT-SAE-key-manage.patch
+ * 0017-wpa_supplicant-Support-WPA_KEY_MGMT_FT-for-eapol-off.patch
+ * 0018-wpa_supplicant-suppress-deauth-for-PMKSA-caching-dis.patch
+ * 0019-Fix-for-PMK-expiration-issue-through-supplicant.patch
+ * 0020-SAE-Drop-PMKSA-cache-after-receiving-specific-deauth.patch
+ * 0021-Avoid-deauthenticating-STA-if-the-reason-for-freeing.patch
+ * 0022-wpa_supplicant-support-bgscan.patch
+ * 0023-non-upstream-wl-cmd-create-interface-to-support-driv.patch [x]
+ * 0024-non-upstream-wl-cmd-create-wl_do_cmd-as-an-entry-doi.patch [x]
+ * 0025-non-upstream-wl-cmd-create-ops-table-to-do-wl-comman.patch [x]
+ * 0026-non-upstream-wl-cmd-add-more-compile-flag.patch [x]
+ * 0027-Fix-dpp-config-parameter-setting.patch
+ * 0028-DPP-Resolving-failure-of-dpp-configurator-exchange-f.patch
+ * 0029-Enabling-SUITEB192-and-SUITEB-compile-options.patch
+ * 0030-DPP-Enabling-CLI_EDIT-option-for-enrollee-plus-respo.patch
+ * 0031-P2P-Fixes-Scan-trigger-failed-once-GC-invited-by-GO.patch
+ * 0032-non-upstream-SAE-disconnect-after-PMKSA-cache-expire.patch [x]
+ * 0033-Add-support-for-beacon-loss-roaming.patch
+ * 0034-wpa_supplicant-Set-PMKSA-to-driver-while-key-mgmt-is.patch
+ * 0035-nl80211-Set-NL80211_SCAN_FLAG_COLOCATED_6GHZ-in-scan.patch
+ * 0036-scan-Add-option-to-disable-6-GHz-collocated-scanning.patch
+ * 0037-Enabling-OWE-in-wpa_supplicant.patch
+ * 0038-Add-link-loss-timer-on-beacon-loss.patch
+ * 0039-FT-Sync-nl80211-ext-feature-index.patch
+ * 0040-nl80211-Introduce-a-vendor-header-for-vendor-NL-ifac.patch
+ * 0041-add-support-to-offload-TWT-setup-request-handling-to.patch
+ * 0042-add-support-to-offload-TWT-Teardown-request-handling.patch
+ * 0043-Add-support-to-configure-TWT-of-a-session-using-offs.patch
+ * 0044-Establish-a-Default-TWT-session-in-the-STA-after-ass.patch
+ * 0045-validate-the-TWT-parameters-exponent-and-mantissa-pa.patch
+ * 0046-Fix-for-station-sending-open-auth-instead-of-SAE-aut.patch
+ * 0047-Fix-ROAMOFFLOAD-raises-portValid-too-early.patch
+ * 0048-Fix-associating-failed-when-PMK-lifetime-is-set-to-1.patch
+ * 0049-non-upstream-p2p_add_group-command-unification.patch [x]
+ * 0050-non-upstream-MBO-wpa_cli-mbo-command-by-IFX-vendorID.patch [x]
+ * 0051-Flush-PMKID-info-irrespective-of-reason-code-on-deau.patch
+
+Note: [*] is the upstream tag containing the patch
+      [x] means no plan to upstream

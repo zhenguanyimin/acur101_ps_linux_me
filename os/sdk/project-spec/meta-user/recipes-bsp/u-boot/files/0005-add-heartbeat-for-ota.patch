@@ -1,0 +1,430 @@
+diff -upNr git/device_discovery/device_discovery.c git_new/device_discovery/device_discovery.c
+--- git/device_discovery/device_discovery.c	2023-05-16 15:21:14.312840992 +0800
++++ git_new/device_discovery/device_discovery.c	2023-05-16 15:05:56.711035339 +0800
+@@ -38,7 +38,7 @@ static int get_sn(uint8_t sn[32])
+ 
+ 	DEVICE_INFO_SET_FS_TYPE();
+ 	ret = fs_read( DEVICE_SN_FILE_NAME, (ulong)sn, 0, 32 , &len);
+-	if (ret <= 0)
++	if (ret != 0)
+ 	{
+ 		return -1;
+ 	}
+@@ -55,24 +55,33 @@ static void get_device_info(uint8_t comp
+ 
+ 	DEVICE_INFO_SET_FS_TYPE();
+ 	iRet = fs_read( DEVICE_INFO_FILE_NAME, (ulong)&header, 0, sizeof(header) , &len);
+-	if ((iRet > 0) && (len == sizeof(header)))
++	if ((0 == iRet) && (len == sizeof(header)))
+ 	{
+ 		if (compay)
+ 		{
+ 			size = (header.corpInfoLen > 32)?32:header.corpInfoLen; 
+-			memcpy(compay, header.corpInfo, size);
++			for (int i=0; i < size && header.corpInfo[i] != 0xFF; i++)
++			{
++				compay[i] = header.corpInfo[i];
++			}
+ 		}
+ 
+ 		if (device_name)
+ 		{
+ 			size = (header.devNameLen > 32)?32:header.devNameLen; 
+-			memcpy(device_name, header.devName, size);
++			for (int i=0; i < size && header.devName[i] != 0xFF; i++)
++			{
++				device_name[i] = header.devName[i];
++			}
+ 		}
+ 
+ 		if (device_version)
+ 		{
+ 			size = (header.fwVersionLen > 64)?64:header.fwVersionLen; 
+-			memcpy(device_version, header.fwVersion, size);
++			for (int i=0; i < size && header.fwVersion[i] != 0xFF; i++)
++			{
++				device_version[i] = header.fwVersion[i];
++			}
+ 		}
+ 	}
+ }
+@@ -111,7 +120,7 @@ static udp_broadcase_device_info_t devic
+ 
+ void (*udp_broadcase_rcv_cb_f)( uint8_t *, uint32_t ) = NULL;
+ 
+-#define UDP_BROADCASE_TIMEOUT (1000*60*1)
++#define UDP_BROADCASE_TIMEOUT (1000*10)
+ #define UDP_BROADCASE_PORT (1800)
+ #define UDP_BROADCASE_SEND_DEVICE_INFO_PORT (1810)
+ 
+@@ -219,8 +228,11 @@ ret_code_t udp_broadcase_got_data( alink
+ 	
+ 	memset(sn, 0, sizeof(sn));
+ 	ret = get_sn(sn); 
+-	if ((ret > 0) && (strcmp(sn, p->sn)))
++	printf("my sn:%s, target sn:%s\n", sn, p->sn);
++
++	if ((p->sn[0] != '\0') && (strcmp(sn, p->sn)))
+ 	{
++		printf("sn is not match!!\n");
+ 		return RET_INVALID_PARAM;
+ 	}
+ 
+diff -upNr git/include/configs/platform-top.h git_new/include/configs/platform-top.h
+--- git/include/configs/platform-top.h	1970-01-01 08:00:00.000000000 +0800
++++ git_new/include/configs/platform-top.h	2023-05-16 15:05:56.659034442 +0800
+@@ -0,0 +1 @@
++#include <configs/xilinx_zynqmp.h>
+diff -upNr git/include/env_default.h git_new/include/env_default.h
+--- git/include/env_default.h	2023-05-16 15:21:14.532843703 +0800
++++ git_new/include/env_default.h	2023-05-16 15:17:33.670320400 +0800
+@@ -52,8 +52,8 @@ if test -e ${OTA_partition} download.fla
+ if fatinfo ${boot_partition} && test -e ${boot_partition} boot.scr && test -e ${boot_partition} xen && test -e ${boot_partition} system.dtb && test -e ${boot_partition} Image; \
+ then echo system file OK; else echo system file lost, start download...;setenv download 1;fi;\
+ if test -e ${OTA_partition} update.flag; then fatrm ${OTA_partition} download.flag; echo run update;run update_system;fi;\
+-if test -e ${OTA_partition} download.flag; then setenv download 1;setenv autoload 0;dhcp;device_discovery;fi;\
+-while test ${download} -eq 1; do OTA; if test -e ${OTA_partition} update.flag; then setenv download 0;else sleep 3;fi;done;\
++if test -e ${OTA_partition} download.flag; then setenv download 1;setenv autoload 0;fi; if test ${download} -eq 1; then dhcp;fi;\
++while test ${download} -eq 1; do device_discovery; OTA; if test -e ${OTA_partition} update.flag; then setenv download 0;else sleep 3;fi;done;\
+ if test -e ${OTA_partition} update.flag; then fatrm ${OTA_partition} download.flag; echo run update;run update_system;fi;\
+ "
+ 
+diff -upNr git/OTA/alink/alink.c git_new/OTA/alink/alink.c
+--- git/OTA/alink/alink.c	2023-05-16 15:21:14.480843062 +0800
++++ git_new/OTA/alink/alink.c	2023-05-16 15:05:56.711035339 +0800
+@@ -24,6 +24,7 @@ ret_code_t alink_init( void )
+ {
+ 	ret_code_t eRet = RET_OK;
+ 
++	upgrade_init();
+ 
+ 	return eRet;
+ }
+@@ -109,3 +110,50 @@ uint16_t alink_pkg_first( alink_msg_t *p
+ 	return (wLen + ALINK_NO_PAYLOAD_SIZE);
+ }
+ 
++#pragma pack(1)
++	typedef struct alink_sys_heartbeat
++	{
++		uint8_t  electricity;
++		uint8_t  status;
++		uint8_t  faultnum;
++		uint32_t faultCode[64];
++	}alink_sys_heartbeat_t;
++#pragma pack()
++
++static uint16_t system_pkg_heartbeat( uint8_t *pbyBuffer, uint16_t wSize, void *psStatus )
++{
++	uint32_t i;
++	alink_sys_heartbeat_t *psHeartBeat;
++
++	psHeartBeat = (alink_sys_heartbeat_t*)pbyBuffer;
++
++	psHeartBeat->electricity	= 100;
++	psHeartBeat->status			= 0;	//need read
++	psHeartBeat->faultnum		= 0;	//need read
++	for( i = 0; psHeartBeat->faultnum > i; ++i )
++	{
++		psHeartBeat->faultCode[i] = 0;	//need read
++	}
++
++	return 3+i*4;
++}
++
++
++int alink_upload_heartbeat( void )
++{
++	alink_msg_t msg;
++	int len;
++	static ulong last_time = 0;
++	
++	if (get_timer(last_time) >= 1000)
++	{
++		len = system_pkg_heartbeat(msg.buffer, sizeof(msg.buffer), 0);
++		len = alink_pkg_first(&msg, len, 0xD0);
++
++		tcp_client_send_data_withoutACK(&msg, len, 1000);
++		///printf("%s,len=%d\n", __func__, len);
++
++		last_time = get_timer(0);
++	}
++}
++
+diff -upNr git/OTA/alink/upgrade/upgrade.c git_new/OTA/alink/upgrade/upgrade.c
+--- git/OTA/alink/upgrade/upgrade.c	2023-05-16 15:21:14.480843062 +0800
++++ git_new/OTA/alink/upgrade/upgrade.c	2023-05-16 15:05:56.711035339 +0800
+@@ -1,6 +1,8 @@
+ 
+ #include "upgrade.h"
+ #include "../../OTA_common.h"
++#include "../../boot_image/firmware.h"
++#include "fs.h"
+ 
+ static firmware_info_t	sFrimware;
+ static int firmware_check_over = 0; //校验是否完成标志。避免收到多次校验指令，导致下载时间过长
+@@ -20,6 +22,53 @@ static int update_state = UPDATE_STAT_NO
+ #define UPDATE_RET_COMPLETE     (2)
+ #define UPDATE_RET_STATUS_ERROR (10) //the return value
+ 
++#define DEVICE_INFO_FILE_NAME "firmware-header"
++#define DEVICE_SN_FILE_NAME "sn"
++#define DEVICE_INFO_SET_FS_TYPE()  fs_set_blk_dev("mmc", "0:1", FS_TYPE_FAT)
++
++static void get_device_info(uint8_t compay[32], uint8_t device_name[32], uint8_t device_version[64])
++{
++	firmware_header_t header;
++	int iRet;
++	loff_t len;
++	int size;
++
++	DEVICE_INFO_SET_FS_TYPE();
++	iRet = fs_read( DEVICE_INFO_FILE_NAME, (ulong)&header, 0, sizeof(header) , &len);
++	printf("read firmware header, ret:%d, len:%d\n", iRet, len);
++	
++	if ((0 == iRet) && (len == sizeof(header)))
++	{
++		if (compay)
++		{
++			size = (header.corpInfoLen > 32)?32:header.corpInfoLen; 
++			for (int i=0; i < size && header.corpInfo[i] != 0xFF; i++)
++			{
++				compay[i] = header.corpInfo[i];
++			}
++		}
++
++		if (device_name)
++		{
++			size = (header.devNameLen > 32)?32:header.devNameLen; 
++			for (int i=0; i < size && header.devName[i] != 0xFF; i++)
++			{
++				device_name[i] = header.devName[i];
++			}
++		}
++
++		if (device_version)
++		{
++			size = (header.fwVersionLen > 64)?64:header.fwVersionLen; 
++			for (int i=0; i < size && header.fwVersion[i] != 0xFF; i++)
++			{
++				device_version[i] = header.fwVersion[i];
++			}
++		}
++	}
++}
++
++
+ ret_code_t upgrade_get_version( alink_msg_t *msg, alink_ans_t *resp )
+ {
+ 	ret_code_t eRet = RET_OK;
+@@ -27,13 +76,16 @@ ret_code_t upgrade_get_version( alink_ms
+ 
+ 	psVersionAck = (upgrade_version_ack_t*)(resp->buffer);
+ 
+-	psVersionAck->uRunVersion = 0;
++	memset(psVersionAck, 0, sizeof(*psVersionAck));
++	psVersionAck->uRunVersion = 0;	
++	get_device_info(NULL, NULL, psVersionAck->strAppVersion);
+ 	strncpy( psVersionAck->strBootVersion, "N/A", (size_t)sizeof(psVersionAck->strBootVersion) );
+-	strncpy( psVersionAck->strAppVersion, "N/A", sizeof(psVersionAck->strAppVersion) );
+ 	strncpy( psVersionAck->strHwVersion, "N/A", sizeof(psVersionAck->strHwVersion) );
+ 	strncpy( psVersionAck->strProtocolVersion, "N/A", sizeof(psVersionAck->strProtocolVersion) );
+ 	resp->msg_len = sizeof(upgrade_version_ack_t);
+ 
++	printf("app version:%s\n",  psVersionAck->strAppVersion);
++
+ 	return eRet;
+ }
+ 
+@@ -46,6 +98,9 @@ ret_code_t upgrade_set_reboot(alink_msg_
+ //	psReset = (upgrade_reset_t*)(msg->buffer);
+ 	//nothing
+ 
++	update_state = UPDATE_STAT_NO_START;
++
++
+ 	return eRet;
+ }
+ 
+@@ -272,6 +327,7 @@ ret_code_t upgrade_goto_app(alink_msg_t
+ 	resp->msg_len = sizeof(upgrade_goto_app_ack_t);
+ 
+ 	tcp_client_disconnect();
++	update_state = UPDATE_STAT_NO_START;
+ 
+ 	#if 0
+ 	eRet = boot_goto_app( &errCode );
+@@ -323,3 +379,16 @@ ret_code_t upgrade_get_timeout_info(alin
+ 
+ 	return eRet;
+ }
++
++int is_upgrade_start(void)
++{
++	return ((update_state >= UPDATE_STAT_REQUEST)? 1:0);
++}
++
++void upgrade_init(void)
++{
++	update_state = UPDATE_STAT_NO_START;
++	firmware_check_over = 0;
++	memset(&sFrimware, 0, sizeof(sFrimware));
++}
++
+diff -upNr git/OTA/OTA.c git_new/OTA/OTA.c
+--- git/OTA/OTA.c	2023-05-16 15:21:14.480843062 +0800
++++ git_new/OTA/OTA.c	2023-05-16 15:05:56.711035339 +0800
+@@ -49,6 +49,14 @@ void OTA_start( /*uint32_t mem_addr */)
+ 
+ int OTA_process(void)
+ {	
++	if (tcp_client_is_connect_ready())
++	{
++		if (!is_upgrade_start())
++		{
++			alink_upload_heartbeat();
++		}
++	}
++	
+ 	if (firmware_write_is_start())
+ 	{
+ 		firmware_write();
+diff -upNr git/OTA/tcp_client/tcp_client.c git_new/OTA/tcp_client/tcp_client.c
+--- git/OTA/tcp_client/tcp_client.c	2023-05-16 15:21:14.484843112 +0800
++++ git_new/OTA/tcp_client/tcp_client.c	2023-05-16 15:05:56.711035339 +0800
+@@ -68,6 +68,7 @@ static inline int store_block(uchar *src
+ 		retry_tcp_seq_num = tcp_seq_num;
+ 	
+ 		tcp_client_recv_cbk(src, len);
++		//printf("store block, len:%u, seq:%u,ack:%u\n", retry_len, tcp_seq_num, tcp_ack_num);
+ 	}
+ 	
+ 	return 0;
+@@ -210,24 +211,6 @@ static void tcp_client_handler(uchar *pk
+ 		current_state = TCP_CLIENT_TRANSFERRING;
+ 		///break; //no need!!
+ 	case TCP_CLIENT_TRANSFERRING:
+-		if (tcp_disconnect)
+-		{
+-			printf("TCP: Transferring, seq=%x, ack=%x,len=%x\n",
+-			   	tcp_seq_num, tcp_ack_num, len);
+-
+-			current_state = TCP_CLIENT_TRANSFERRED;
+-			tcp_client_send(TCP_ACK | TCP_FIN,
+-				  tcp_seq_num, tcp_ack_num, 0);
+-			break;
+-		}
+-
+-		if (tcp_seq_num >= initial_data_seq_num &&
+-		    store_block(pkt, tcp_seq_num - initial_data_seq_num, len, tcp_seq_num, tcp_ack_num) != 0) {
+-			tcp_client_fail("TCP: store error\n",
+-				  tcp_seq_num, tcp_ack_num, action);
+-			return;
+-		}
+-
+ 		switch (tcp_state) {
+ 		case TCP_FIN_WAIT_2:
+ 			tcp_client_send(TCP_ACK, tcp_seq_num, tcp_ack_num, len);
+@@ -239,8 +222,44 @@ static void tcp_client_handler(uchar *pk
+ 			net_set_state(NETLOOP_FAIL);
+ 			break;
+ 		case TCP_ESTABLISHED:
+-			tcp_client_send(TCP_ACK, tcp_seq_num, tcp_ack_num,
+-				  len);
++			///printf("TCP: TCP_ESTABLISHED\n");
++			if (tcp_disconnect)
++			{
++				printf("TCP: Transferring, seq=%x, ack=%x,len=%x\n",
++				   	tcp_seq_num, tcp_ack_num, len);
++
++				current_state = TCP_CLIENT_TRANSFERRED;
++				tcp_client_send(TCP_ACK | TCP_FIN,
++					  tcp_seq_num, tcp_ack_num, 0);
++				break;
++			}
++
++			//只处理顺序的数据，回复ACK，乱序的,重发的数据不处理
++			if (tcp_seq_num == initial_data_seq_num)
++			{
++				///printf("got len:%d, seq:%u\n", len, tcp_seq_num);
++				
++				tcp_client_send(TCP_ACK, tcp_seq_num, tcp_ack_num, len);	
++				initial_data_seq_num = tcp_seq_num + len;
++
++				if (store_block(pkt, 0, len, tcp_seq_num, tcp_ack_num) != 0) 
++				{
++					tcp_client_fail("TCP: store error\n",tcp_seq_num, tcp_ack_num, action);
++					return;
++				}
++			}
++			else 
++			{
++				printf("\n##TCP unorder error!!!!!\n");
++				printf("seq:%u, init seq:%u, len:%d\n", tcp_seq_num, initial_data_seq_num, len);
++
++				//对重发包发送ACK
++				if (tcp_seq_num < initial_data_seq_num)
++				{
++					tcp_client_send(TCP_ACK, initial_data_seq_num, tcp_ack_num, 0);	
++				}
++			}
++				
+ 			loop_state = NETLOOP_SUCCESS;
+ 			break;
+ 		case TCP_CLOSE_WAIT:     /* End of transfer */
+@@ -329,7 +348,7 @@ int tcp_client_send_data( uint8_t *pbyDa
+ 
+ 	uchar *ptr, *offset;
+ 
+-	//printf("send seq:%d, ack:%d\n", tcp_seq_num, tcp_ack_num);
++	///printf("%s() send seq:%d, ack:%d, send len:%d\n", __func__, tcp_seq_num, tcp_ack_num, uLen);
+ 
+ 	ptr = net_tx_packet + net_eth_hdr_size() +
+ 		IP_TCP_HDR_SIZE + TCP_TSOPT_SIZE + 2;
+@@ -347,6 +366,37 @@ int tcp_client_send_data( uint8_t *pbyDa
+ 	return uLen;
+ }
+ 
++int tcp_client_send_data_withoutACK( uint8_t *pbyData, uint32_t uLen, uint32_t uTimeOut )
++{
++	unsigned int tcp_ack_num = retry_tcp_ack_num;
++	unsigned int tcp_seq_num = retry_tcp_seq_num;
++
++	uchar *ptr, *offset;
++
++	printf("send seq:%d, ack:%d, retry_len:%d, retry_action:%x\n", tcp_seq_num, tcp_ack_num, retry_len, retry_action);
++
++	if (retry_action != TCP_ACK)
++	{
++		tcp_seq_num += retry_len;
++	}
++
++	ptr = net_tx_packet + net_eth_hdr_size() +
++		IP_TCP_HDR_SIZE + TCP_TSOPT_SIZE + 2;
++	offset = ptr;
++
++	memcpy(offset, pbyData, uLen);
++	offset += uLen;
++
++	net_send_tcp_packet((offset - ptr), SERVER_PORT, our_port,
++			    TCP_PUSH, tcp_seq_num, tcp_ack_num);
++
++	retry_action = TCP_ACK;
++	retry_len = 0;
++	retry_tcp_seq_num = tcp_seq_num + uLen;
++
++	return uLen;
++}
++
+ 
+ int tcp_client_register_recv_cbk( void (*pv_cbk)(uint8_t *pbyData, uint32_t uLen) )
+ {
+@@ -372,4 +422,8 @@ int tcp_client_check_error(void)
+ 	return 0;
+ }
+ 
++int tcp_client_is_connect_ready(void)
++{
++	return (current_state >= TCP_CLIENT_CONNECTED )? 1: 0;
++}
+ 

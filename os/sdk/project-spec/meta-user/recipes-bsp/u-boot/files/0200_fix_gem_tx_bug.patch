@@ -1,0 +1,27 @@
+diff -upNr git.old/drivers/net/zynq_gem.c git/drivers/net/zynq_gem.c
+--- git.old/drivers/net/zynq_gem.c	2023-07-06 17:26:12.527075468 +0800
++++ git/drivers/net/zynq_gem.c	2023-07-08 11:23:38.212069368 +0800
+@@ -535,6 +535,7 @@ static int zynq_gem_send(struct udevice
+ 	struct zynq_gem_priv *priv = dev_get_priv(dev);
+ 	struct zynq_gem_regs *regs = priv->iobase;
+ 	struct emac_bd *current_bd = &priv->tx_bd[1];
++	int ret;
+ 
+ 	/* Setup Tx BD */
+ 	memset(priv->tx_bd, 0, sizeof(struct emac_bd));
+@@ -573,8 +574,13 @@ static int zynq_gem_send(struct udevice
+ 	if (priv->tx_bd->status & ZYNQ_GEM_TXBUF_EXHAUSTED)
+ 		printf("TX buffers exhausted in mid frame\n");
+ 
+-	return wait_for_bit_le32(&regs->txsr, ZYNQ_GEM_TSR_DONE,
++	ret = wait_for_bit_le32(&regs->txsr, ZYNQ_GEM_TSR_DONE,
+ 				 true, 20000, true);
++
++	/* clean TX complete status */
++	setbits_le32(&regs->txsr, ZYNQ_GEM_TSR_DONE); 
++
++	return ret;
+ }
+ 
+ /* Do not check frame_recd flag in rx_status register 0x20 - just poll BD */
+ 

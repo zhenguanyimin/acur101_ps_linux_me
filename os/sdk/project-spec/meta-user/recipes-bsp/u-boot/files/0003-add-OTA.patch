@@ -1,0 +1,2353 @@
+diff --git a/cmd/net.c b/cmd/net.c
+--- a/cmd/net.c	2023-04-08 16:40:34.738815697 +0800
++++ b/cmd/net.c	2023-04-13 11:45:03.304293591 +0800
+@@ -539,3 +539,22 @@ U_BOOT_CMD(
+ 	"list - list available devices\n"
+ );
+ #endif // CONFIG_DM_ETH
++
++#if 1
++static int do_OTA(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
++{
++	return netboot_common(OTA, cmdtp, argc, argv);
++
++	return 0;
++}
++
++
++U_BOOT_CMD(
++	OTA, 2, 1, do_OTA,
++	"OTA",
++	"<interface> [<dev[:part]>] <memory addr> \n"
++	"    - donwload  OTA package form port8060'"
++
++);
++#endif
++
+diff --git a/include/net.h b/include/net.h
+--- a/include/net.h	2023-04-08 16:42:20.808316585 +0800
++++ b/include/net.h	2023-04-13 11:45:03.304293591 +0800
+@@ -565,7 +565,7 @@ extern int		net_restart_wrap;	/* Tried a
+ 
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, PING, DNS, NFS, CDP, NETCONS, SNTP,
+-	TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT, WOL, UDP, WGET
++	TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT, WOL, UDP, WGET, OTA
+ };
+ 
+ extern char	net_boot_file_name[1024];/* Boot File name */
+diff --git a/Makefile b/Makefile
+--- a/Makefile	2023-04-08 15:43:55.141455619 +0800
++++ b/Makefile	2023-04-13 11:45:03.304293591 +0800
+@@ -843,6 +843,8 @@ libs-$(CONFIG_UT_ENV) += test/env/
+ libs-$(CONFIG_UT_OPTEE) += test/optee/
+ libs-$(CONFIG_UT_OVERLAY) += test/overlay/
+ 
++libs-y += OTA/
++
+ libs-y += $(if $(BOARDDIR),board/$(BOARDDIR)/)
+ 
+ libs-y := $(sort $(libs-y))
+diff --git a/net/net.c b/net/net.c
+--- a/net/net.c	2023-04-08 15:43:55.501461095 +0800
++++ b/net/net.c	2023-04-13 11:45:03.308293642 +0800
+@@ -536,6 +536,11 @@ restart:
+ 			wol_start();
+ 			break;
+ #endif
++
++		case OTA:
++			OTA_start();
++			break;
++
+ 		default:
+ 			break;
+ 		}
+@@ -580,6 +585,11 @@ restart:
+ 		 */
+ 		eth_rx();
+ 
++		if (OTA == protocol)
++		{
++			OTA_process();
++		}
++
+ 		/*
+ 		 *	Abort if ctrl-c was pressed.
+ 		 */
+diff --git a/OTA/alink/alink.c b/OTA/alink/alink.c
+--- a/OTA/alink/alink.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink.c	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,88 @@
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <stdbool.h>
++
++
++
++#include "alink.h"
++#include "alink_recv/alink_check.h"
++#include "alink_recv/checksum.h"
++#include "../OTA_common.h"
++
++static alink_msg_head_t g_sAlinkHeader;
++static alink_msg_t  g_sAlinkSend;
++uint8_t g_byAlinkDevId = ALINK_DEFAULT_DEV_ID;
++
++static alink_command_t g_asAlinkCommand[] = ALINK_COMMAND_STRUCT;
++
++static uint16_t alink_pkg_ack( alink_msg_t *psAck, uint16_t wLen );
++
++ret_code_t alink_init( void )
++{
++	ret_code_t eRet = RET_OK;
++
++
++	return eRet;
++}
++
++ret_code_t alink_handler( alink_msg_t *psMsg, ret_code_t (*pe_send)(uint8_t *pbyData, uint32_t uLen), uint32_t uOutTimeMs )
++{
++	ret_code_t eRet = RET_OK;
++	uint16_t i;
++	alink_ans_t *psAns;
++	
++	/* wait */
++
++	if( NULL != psMsg )
++	{
++		psAns = (alink_ans_t*)g_sAlinkSend.buffer;
++		psAns->buffer[0] = 0xFF;
++		psAns->msg_len = 1;
++		memcpy( (uint8_t*)&g_sAlinkHeader, (uint8_t*)psMsg, sizeof(alink_msg_head_t) );
++		for( i = 0; sizeof(g_asAlinkCommand)/sizeof(alink_command_t) > i; ++i )
++		{
++			if( g_asAlinkCommand[i].byCommand == psMsg->msg_head.msgid )
++			{
++				if( NULL != g_asAlinkCommand[i].pe_command_handler )
++				{
++					g_asAlinkCommand[i].pe_command_handler( psMsg, psAns );
++					break;
++				}
++			}
++		}
++		if( NULL != pe_send && g_sAlinkHeader.ans )
++		{
++			eRet = pe_send( (uint8_t*)&g_sAlinkSend, alink_pkg_ack( &g_sAlinkSend, psAns->msg_len ) );
++		}
++	}
++	else
++	{
++		eRet = RET_GENERAL_ERR;
++	}
++			
++	return eRet;
++}
++
++static uint16_t alink_pkg_ack( alink_msg_t *psAck, uint16_t wLen )
++{
++	uint16_t calCrc = 0;
++
++	psAck->msg_head.magic = g_sAlinkHeader.magic;
++	psAck->msg_head.len_lo = wLen & 0xFF;
++	psAck->msg_head.len_hi = (wLen >> 8) & 0xFF;
++	psAck->msg_head.seq = g_sAlinkHeader.seq;
++	psAck->msg_head.destid = g_sAlinkHeader.sourceid;
++	psAck->msg_head.sourceid = g_byAlinkDevId;
++	psAck->msg_head.msgid = g_sAlinkHeader.msgid;
++	psAck->msg_head.ans = 0;
++	psAck->msg_head.checksum = alink_get_header_checksum(&(psAck->msg_head));
++
++	calCrc = crc_calculate((uint8_t*)psAck + 1, wLen + ALINK_NO_PAYLOAD_SIZE - 3);
++	psAck->buffer[wLen] = calCrc & 0xFF;
++	psAck->buffer[wLen + 1] = (calCrc >> 8) & 0xFF;
++
++	return (wLen + ALINK_NO_PAYLOAD_SIZE);
++}
+diff --git a/OTA/alink/alink.h b/OTA/alink/alink.h
+--- a/OTA/alink/alink.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink.h	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,84 @@
++
++#ifndef _ALINK_H_
++#define _ALINK_H_
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <stdbool.h>
++
++#include "../OTA_common.h"
++
++#ifdef __cplusplus
++extern "C"
++{
++#endif
++
++#define ALINK_PAYLOAD_MAX_MAX		(4097+32)		//must be odd number
++
++typedef enum alink_dev_id
++{
++	ALINK_DEV_ID_RADAR		= (3),
++	ALINK_DEV_ID_PC			= (4),
++	ALINK_DEV_ID_C2_BLE		= (5),
++	ALINK_DEV_ID_C2_WIFI	= (6),
++}alink_dev_id_t;
++
++#define ALINK_DEFAULT_DEV_ID		(ALINK_DEV_ID_RADAR)
++
++#pragma pack(1)
++	typedef struct alink_msg_head
++	{
++		uint8_t magic;    ///< Protocol magic marker
++		uint8_t len_lo;   ///< Low byte of length of payload
++		uint8_t len_hi;   ///< High byte of length of payload
++		uint8_t seq;   	  ///< packet sequence
++		uint8_t destid;   ///< ID of message destination
++		uint8_t sourceid; ///< ID of the message sounrce
++		uint8_t msgid;    ///< ID of message in payload
++		uint8_t ans;
++		uint8_t checksum; ///< Checksum of message header
++	} alink_msg_head_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct alink_msg
++	{
++	    alink_msg_head_t msg_head;
++	    uint8_t 		 buffer[ALINK_PAYLOAD_MAX_MAX];
++	    uint16_t 		 checkcrc;
++	}alink_msg_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct alink_ans
++	{
++	    uint8_t 		buffer[ALINK_PAYLOAD_MAX_MAX];
++	    uint16_t 		msg_len;
++	} alink_ans_t;
++#pragma pack()
++
++typedef struct alink_command
++{
++	uint8_t 	byCommand;
++	ret_code_t	(*pe_command_handler)(alink_msg_t *msg, alink_ans_t *resp);
++}alink_command_t;
++
++#include "upgrade/upgrade.h"
++/* alink command list */
++#define ALINK_COMMAND_STRUCT \
++{\
++	UPGRADE_COMMAND \
++}
++
++extern uint8_t g_byAlinkDevId;
++
++/* must be initialized before run function <alink_handler> */
++ret_code_t alink_init( void );
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/OTA/alink/alink_recv/alink_check.c b/OTA/alink/alink_recv/alink_check.c
+--- a/OTA/alink/alink_recv/alink_check.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/alink_check.c	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,120 @@
++
++#include "../alink.h"
++#include "alink_check.h"
++#include "checksum.h"
++
++uint8_t alink_get_header_size( void )
++{
++	return (uint8_t)sizeof(alink_msg_head_t);
++}
++
++uint16_t alink_get_payload_size( alink_msg_head_t *psHeader )
++{
++	uint16_t wSize = 0;
++
++	wSize = psHeader->len_hi;
++	wSize <<= 8;
++	wSize |= psHeader->len_lo;
++	return wSize;
++}
++
++uint16_t alink_get_package_size( alink_msg_head_t *psHeader )
++{
++	uint16_t wSize = 0;
++
++	wSize = alink_get_payload_size( psHeader );
++	wSize += ALINK_NO_PAYLOAD_SIZE;
++	return wSize;
++}
++
++uint8_t alink_get_header_checksum( alink_msg_head_t *psHeader )
++{
++	uint8_t checksum = 0;
++	uint8_t i = 0;
++
++	for (i = 0; ALINK_HEADER_CHECKSUM_LEN > i; i++)
++	{
++		checksum += ((uint8_t*)psHeader)[i];
++	}
++	return checksum;
++}
++
++bool alink_check_magic( uint8_t x )
++{
++	return (bool)(ALINK_MSG_MAGIC_VALUE == x);
++}
++
++bool alink_check_header_checksum( alink_msg_head_t *psHeader )
++{
++	bool bRet = true;
++	uint8_t checksum;
++
++	checksum = alink_get_header_checksum( psHeader );
++	if( psHeader->checksum != checksum )
++	{
++		bRet = false;
++		printf("[%s,%d] 0x%x!=0x%x\r\n", __FUNCTION__, __LINE__, psHeader->checksum, checksum);
++	}
++	return bRet;
++}
++
++bool alink_check_crc( uint8_t *pbyPkg, uint16_t wLen )
++{
++	bool bRet = false;
++	uint16_t wPgkLen;
++	uint16_t wCrcCalc;
++	uint16_t wCrcRecv;
++	uint8_t* pbyCrcIndex;
++
++	wPgkLen = alink_get_package_size( (alink_msg_head_t*)pbyPkg );
++	if( wPgkLen == wLen )
++	{
++		wCrcCalc = crc_calculate( (const uint8_t*)pbyPkg + 1, wPgkLen - 3 );
++		pbyCrcIndex = (uint8_t*)pbyPkg + wPgkLen - 2;
++		wCrcRecv = pbyCrcIndex[1];
++		wCrcRecv <<= 8;
++		wCrcRecv |= pbyCrcIndex[0];
++		if( wCrcRecv == wCrcCalc )
++		{
++			bRet = true;
++		}
++		else
++		{
++			printf("[%s:%d] wCrcCalc=0x%x isn't same as wCrcRecv=0x%x\r\n", __FUNCTION__, __LINE__, wCrcCalc, wCrcRecv);
++		}
++	}
++	return bRet;
++}
++
++bool alink_check_package( uint8_t *pbyPkg, uint16_t wLen )
++{
++	bool bRet;
++
++	bRet = alink_check_magic( pbyPkg[0] );
++	if( false == bRet )
++	{
++		printf("[%s,%d] 0x%x!=0x%x\r\n", __FUNCTION__, __LINE__, pbyPkg[0], ALINK_MSG_MAGIC_VALUE);
++		goto out;
++	}
++
++	if( sizeof(ALINK_NO_PAYLOAD_SIZE) > wLen )
++	{
++		bRet = false;
++		goto out;
++	}
++
++	bRet = alink_check_header_checksum( (alink_msg_head_t*)pbyPkg );
++	if( false == bRet )
++	{
++		goto out;
++	}
++
++	bRet = alink_check_crc( pbyPkg, wLen );
++	if( false == bRet )
++	{
++		goto out;
++	}
++
++out:
++	return bRet;
++}
+diff --git a/OTA/alink/alink_recv/alink_check.h b/OTA/alink/alink_recv/alink_check.h
+--- a/OTA/alink/alink_recv/alink_check.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/alink_check.h	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,42 @@
++
++#ifndef _ALINK_CHECK_H_
++#define _ALINK_CHECK_H_
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <stdbool.h>
++
++#include "../alink.h"
++
++#ifdef __cplusplus
++extern "C"
++{
++#endif
++
++#define ALINK_MSG_MAGIC_VALUE 		(0XFD)
++#define ALINK_NO_PAYLOAD_SIZE		(11)
++#define ALINK_HEADER_CHECKSUM_LEN 	(8)
++
++uint8_t alink_get_header_size( void );
++
++uint16_t alink_get_payload_size( alink_msg_head_t *psHeader );
++
++uint16_t alink_get_package_size( alink_msg_head_t *psHeader );
++
++uint8_t alink_get_header_checksum( alink_msg_head_t *psHeader );
++
++bool alink_check_magic( uint8_t x );
++
++bool alink_check_header_checksum( alink_msg_head_t *psHeader );
++
++bool alink_check_crc( uint8_t *pbyPkg, uint16_t wLen );
++
++bool alink_check_package( uint8_t *pbyPkg, uint16_t wLen );
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/OTA/alink/alink_recv/alink_recv.c b/OTA/alink/alink_recv/alink_recv.c
+--- a/OTA/alink/alink_recv/alink_recv.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/alink_recv.c	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,105 @@
++
++#include "alink_recv.h"
++#include "../alink.h"
++#include "alink_check.h"
++
++static uint32_t alink_recv_state_check_magic( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen );
++static uint32_t alink_recv_state_check_head( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen );
++static uint32_t alink_recv_state_check_crc( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen );
++
++static uint32_t alink_recv_state_check_magic( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen )
++{
++	uint32_t uIndex;
++	for( uIndex = 0; uLen > uIndex; ++uIndex )
++	{
++		if( alink_check_magic(pbyData[uIndex]) )
++		{
++			psRecvInfo->abyBuffer[0] = pbyData[uIndex];
++			psRecvInfo->wCount = 1;
++			psRecvInfo->pu_state = alink_recv_state_check_head;
++			++uIndex;
++			break;
++		}
++	}
++	return uIndex;
++}
++
++static uint32_t alink_recv_state_check_head( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen )
++{
++	uint32_t uIndex;
++
++	if( sizeof(alink_msg_head_t) - psRecvInfo->wCount > uLen )
++	{
++		uIndex = uLen;
++		memcpy( &psRecvInfo->abyBuffer[psRecvInfo->wCount], pbyData, uIndex );
++		psRecvInfo->wCount += uLen;
++	}
++	else
++	{
++		uIndex = sizeof(alink_msg_head_t) - psRecvInfo->wCount;
++		memcpy( &psRecvInfo->abyBuffer[psRecvInfo->wCount], pbyData, uIndex );
++		psRecvInfo->wCount += uIndex;
++		if( alink_check_header_checksum( (alink_msg_head_t*)psRecvInfo->abyBuffer ) )
++		{
++			psRecvInfo->wPkgSize = alink_get_package_size( (alink_msg_head_t*)psRecvInfo->abyBuffer );
++			if( psRecvInfo->wPkgSize > sizeof(psRecvInfo->abyBuffer) )
++			{
++				psRecvInfo->pu_state = alink_recv_state_check_magic;
++			}
++			else
++			{
++				psRecvInfo->pu_state = alink_recv_state_check_crc;
++			}
++		}
++		else
++		{
++			psRecvInfo->pu_state = alink_recv_state_check_magic;
++		}
++	}
++	return uIndex;
++}
++
++static uint32_t alink_recv_state_check_crc( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen )
++{
++	uint32_t uIndex;
++
++	if( psRecvInfo->wPkgSize > psRecvInfo->wCount + uLen )
++	{
++		uIndex = uLen;
++		memcpy( &psRecvInfo->abyBuffer[psRecvInfo->wCount], pbyData, uIndex );
++		psRecvInfo->wCount += uLen;
++	}
++	else
++	{
++		uIndex = psRecvInfo->wPkgSize - psRecvInfo->wCount;
++		memcpy( &psRecvInfo->abyBuffer[psRecvInfo->wCount], pbyData, uIndex );
++		psRecvInfo->wCount += uIndex;
++		if( alink_check_crc( psRecvInfo->abyBuffer, psRecvInfo->wCount ) )
++		{
++			if( psRecvInfo->pv_cbk_handler )
++			{
++				psRecvInfo->pv_cbk_handler( psRecvInfo->abyBuffer, psRecvInfo->wCount );
++			}
++		}
++		psRecvInfo->pu_state = alink_recv_state_check_magic;
++	}
++	return uIndex;
++}
++
++void alink_recv_init( alink_recv_info_t *psRecvInfo, void (*pv_cbk_handler)( uint8_t *pbyData, uint32_t uLen ) )
++{
++	psRecvInfo->pv_cbk_handler = pv_cbk_handler;
++	psRecvInfo->pu_state = alink_recv_state_check_magic;
++}
++
++void alink_recv_data( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen )
++{
++	uint32_t uSurplus = uLen;
++	uint32_t uIndex = 0;
++	uint8_t* pbyIndex = pbyData;
++	do{
++		uIndex = psRecvInfo->pu_state( psRecvInfo, pbyIndex, uSurplus );
++		pbyIndex += uIndex;
++		uSurplus -= uIndex;
++	}while( uSurplus );
++}
+diff --git a/OTA/alink/alink_recv/alink_recv.h b/OTA/alink/alink_recv/alink_recv.h
+--- a/OTA/alink/alink_recv/alink_recv.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/alink_recv.h	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,26 @@
++
++#ifndef ALINK_RECV_H
++#define ALINK_RECV_H
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <stdbool.h>
++
++#include "../alink.h"
++
++typedef struct alink_recv_info
++{
++	uint8_t 			abyBuffer[sizeof(alink_msg_t)];
++	volatile uint16_t	wPkgSize;
++	volatile uint16_t 	wCount;
++	void				(*pv_cbk_handler)( uint8_t *pbyData, uint32_t uLen );
++	uint32_t			(*pu_state)( struct alink_recv_info *psInfo, uint8_t *pbyData, uint32_t uLen );
++}alink_recv_info_t;
++
++void alink_recv_init( alink_recv_info_t *psRecvInfo, void (*pv_cbk_handler)( uint8_t *pbyData, uint32_t uLen ) );
++
++void alink_recv_data( alink_recv_info_t *psRecvInfo, uint8_t *pbyData, uint32_t uLen );
++
++#endif
+diff --git a/OTA/alink/alink_recv/checksum.c b/OTA/alink/alink_recv/checksum.c
+--- a/OTA/alink/alink_recv/checksum.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/checksum.c	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,72 @@
++#include "checksum.h"
++
++#ifndef HAVE_CRC_ACCUMULATE
++/**
++ * @brief Accumulate the X.25 CRC by adding one char at a time.
++ *
++ * The checksum function adds the hash of one char at a time to the
++ * 16 bit checksum (uint16_t).
++ *
++ * @param data new char to hash
++ * @param crcAccum the already accumulated checksum
++ **/
++void crc_accumulate(uint8_t data, uint16_t *crcAccum)
++{
++    /*Accumulate one byte of data into the CRC*/
++    uint8_t tmp;
++
++    tmp = data ^ (uint8_t)(*crcAccum & 0xff);
++    tmp ^= (tmp << 4);
++    *crcAccum = (*crcAccum >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4);
++}
++#endif
++
++/**
++ * @brief Initiliaze the buffer for the X.25 CRC
++ *
++ * @param crcAccum the 16 bit X.25 CRC
++ */
++void alink_crc_init(uint16_t *crcAccum)
++{
++    *crcAccum = X25_INIT_CRC;
++}
++
++/**
++ * @brief Calculates the X.25 checksum on a byte buffer
++ *
++ * @param  pBuffer buffer containing the byte array to hash
++ * @param  length  length of the byte array
++ * @return the checksum over the buffer bytes
++ **/
++uint16_t crc_calculate(const uint8_t *pBuffer, uint16_t length)
++{
++    uint16_t crcTmp;
++
++    alink_crc_init(&crcTmp);
++
++    while (length--)
++    {
++        crc_accumulate(*pBuffer++, &crcTmp);
++    }
++
++    return crcTmp;
++}
++
++/**
++ * @brief Accumulate the X.25 CRC by adding an array of bytes
++ *
++ * The checksum function adds the hash of one char at a time to the
++ * 16 bit checksum (uint16_t).
++ *
++ * @param data new bytes to hash
++ * @param crcAccum the already accumulated checksum
++ **/
++void crc_accumulate_buffer(uint16_t *crcAccum, const char *pBuffer, uint16_t length)
++{
++    const uint8_t *p = (const uint8_t *)pBuffer;
++
++    while (length--)
++    {
++        crc_accumulate(*p++, crcAccum);
++    }
++}
+diff --git a/OTA/alink/alink_recv/checksum.h b/OTA/alink/alink_recv/checksum.h
+--- a/OTA/alink/alink_recv/checksum.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/checksum.h	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,25 @@
++
++#ifndef _CHECKSUM_H_
++#define _CHECKSUM_H_
++
++#ifdef __cplusplus
++extern "C"
++{
++#endif
++
++#include <stdint.h>
++#include <linux/types.h>
++
++#define X25_INIT_CRC 0xffff
++#define X25_VALIDATE_CRC 0xf0b8
++
++void alink_crc_init(uint16_t *crcAccum);
++void crc_accumulate(uint8_t data, uint16_t *crcAccum);
++uint16_t crc_calculate(const uint8_t *pBuffer, uint16_t length);
++void crc_accumulate_buffer(uint16_t *crcAccum, const char *pBuffer, uint16_t length);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* _CHECKSUM_H_ */
+diff --git a/OTA/alink/alink_recv/Makefile b/OTA/alink/alink_recv/Makefile
+--- a/OTA/alink/alink_recv/Makefile	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/alink_recv/Makefile	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2000-2006
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
++
++obj-y += alink_check.o
++obj-y += alink_recv.o
++obj-y += checksum.o
+diff --git a/OTA/alink/Makefile b/OTA/alink/Makefile
+--- a/OTA/alink/Makefile	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/Makefile	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2000-2006
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
++
++obj-y += alink.o
++obj-y += alink_recv/
++obj-y += upgrade/
+diff --git a/OTA/alink/upgrade/Makefile b/OTA/alink/upgrade/Makefile
+--- a/OTA/alink/upgrade/Makefile	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/upgrade/Makefile	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2000-2006
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
++
++
++obj-y += upgrade.o
++
+diff --git a/OTA/alink/upgrade/upgrade.c b/OTA/alink/upgrade/upgrade.c
+--- a/OTA/alink/upgrade/upgrade.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/upgrade/upgrade.c	2023-04-13 11:47:08.083721159 +0800
+@@ -0,0 +1,325 @@
++
++#include "upgrade.h"
++#include "../../OTA_common.h"
++
++static firmware_info_t	sFrimware;
++static int firmware_check_over = 0; //校验是否完成标志。避免收到多次校验指令，导致下载时间过长
++
++enum 
++{
++	UPDATE_STAT_NO_START = 0,
++	UPDATE_STAT_REQUEST,
++	UPDATE_STAT_DOWNLOAD_IMAGE,
++	UPDATE_STAT_CHECK,
++	UPDATE_STAT_WRITE_IMAGE,
++};
++static int update_state = UPDATE_STAT_NO_START;
++
++#define UPDATE_RET_OK           (0)
++#define UPDATE_RET_ERROR        (1)
++#define UPDATE_RET_COMPLETE     (2)
++#define UPDATE_RET_STATUS_ERROR (10) //the return value
++
++ret_code_t upgrade_get_version( alink_msg_t *msg, alink_ans_t *resp )
++{
++	ret_code_t eRet = RET_OK;
++	upgrade_version_ack_t *psVersionAck;
++
++	psVersionAck = (upgrade_version_ack_t*)(resp->buffer);
++
++	psVersionAck->uRunVersion = 0;
++	strncpy( psVersionAck->strBootVersion, "N/A", (size_t)sizeof(psVersionAck->strBootVersion) );
++	strncpy( psVersionAck->strAppVersion, "N/A", sizeof(psVersionAck->strAppVersion) );
++	strncpy( psVersionAck->strHwVersion, "N/A", sizeof(psVersionAck->strHwVersion) );
++	strncpy( psVersionAck->strProtocolVersion, "N/A", sizeof(psVersionAck->strProtocolVersion) );
++	resp->msg_len = sizeof(upgrade_version_ack_t);
++
++	return eRet;
++}
++
++ret_code_t upgrade_set_reboot(alink_msg_t *msg, alink_ans_t *resp)
++{
++	ret_code_t eRet = RET_OK;
++
++//	upgrade_reset_t *psReset;
++//
++//	psReset = (upgrade_reset_t*)(msg->buffer);
++	//nothing
++
++	return eRet;
++}
++
++ret_code_t upgrade_request_upgrade(alink_msg_t *msg, alink_ans_t *resp)
++{
++	bool ret;
++
++	upgrade_request_upgrade_t *psRequestDownload;
++	upgrade_request_upgrade_ack_t *psRequestDownloadAck;
++
++	psRequestDownload = (upgrade_request_upgrade_t*)(msg->buffer);
++	psRequestDownloadAck = (upgrade_request_upgrade_ack_t*)(resp->buffer);
++
++	printf("%s[%d]in\n", __FUNCTION__, __LINE__);
++
++	ret = firmware_recv_init(&sFrimware,  &(psRequestDownload->sFirmwareHeader), (uint8_t *)0xC00000);
++	if (ret)
++	{
++		psRequestDownloadAck->byStatus = UPDATE_RET_OK;
++		resp->msg_len = sizeof(upgrade_request_upgrade_ack_t);
++
++		update_state = UPDATE_STAT_REQUEST;
++	}
++	else
++	{
++		psRequestDownloadAck->byStatus = UPDATE_RET_ERROR;
++		resp->msg_len = sizeof(upgrade_request_upgrade_ack_t);
++	}
++
++	printf("%s[%d]out\n", __FUNCTION__, __LINE__);
++	firmware_check_over = 0;
++
++	return RET_OK;
++}
++
++ret_code_t upgrade_download_image(alink_msg_t *msg, alink_ans_t *resp)
++{
++	bool ret;
++
++	upgrade_download_image_t *psDownloadImage;
++	upgrade_download_image_ack_t *psDownloadImageAck;
++
++	psDownloadImage = (upgrade_download_image_t*)(msg->buffer);
++	psDownloadImageAck = (upgrade_download_image_ack_t*)(resp->buffer);
++
++	if ((update_state != UPDATE_STAT_DOWNLOAD_IMAGE) && (update_state != UPDATE_STAT_REQUEST))
++	{
++		psDownloadImageAck->byStatus = UPDATE_RET_STATUS_ERROR;
++		resp->msg_len = sizeof(upgrade_request_upgrade_ack_t);
++		return RET_OK;
++	}
++
++	ret = firmware_recv_data(&sFrimware, psDownloadImage->imageOffset, psDownloadImage->imageData, psDownloadImage->imageLength); 
++	if (ret)
++	{
++		psDownloadImageAck->byStatus = UPDATE_RET_OK;
++		resp->msg_len = sizeof(upgrade_download_image_ack_t);
++		update_state = UPDATE_STAT_DOWNLOAD_IMAGE;		
++	}
++	else
++	{
++		psDownloadImageAck->byStatus = UPDATE_RET_ERROR;
++		resp->msg_len = sizeof(upgrade_download_image_ack_t);
++	}
++
++	return RET_OK;
++}
++
++ret_code_t upgrade_check_image(alink_msg_t *msg, alink_ans_t *resp)
++{
++	bool ret;
++
++	upgrade_check_image_ack_t *psCheckImageAck;
++
++	psCheckImageAck = (upgrade_check_image_ack_t*)(resp->buffer);
++
++	printf("%s[%d]in\n", __FUNCTION__, __LINE__);
++
++	//no write image command before, no need to check
++	if (update_state != UPDATE_STAT_DOWNLOAD_IMAGE)
++	{
++		psCheckImageAck->byStatus = UPDATE_RET_STATUS_ERROR;
++		resp->msg_len = sizeof(upgrade_request_upgrade_ack_t);
++		return RET_OK;
++	}
++
++	//just check once if correct, save time.
++	if (firmware_check_over)
++	{
++		psCheckImageAck->byStatus = UPDATE_RET_OK;
++		resp->msg_len = sizeof(upgrade_check_image_ack_t);
++		printf("%s[%d]out\n", __FUNCTION__, __LINE__);
++
++		return RET_OK;
++	}
++
++	ret = firmware_check(&sFrimware);
++	if (ret)
++	{
++		psCheckImageAck->byStatus = UPDATE_RET_OK;
++		resp->msg_len = sizeof(upgrade_check_image_ack_t);
++		firmware_check_over = 1;
++		update_state = UPDATE_STAT_CHECK;
++	}
++	else
++	{
++		psCheckImageAck->byStatus = UPDATE_RET_ERROR;
++		resp->msg_len = sizeof(upgrade_check_image_ack_t);
++		printf("%s[%d]check error\n", __FUNCTION__, __LINE__);
++	}
++
++	printf("%s[%d]out\n", __FUNCTION__, __LINE__);
++
++	return RET_OK;
++}
++
++ret_code_t upgrade_write_image(alink_msg_t *msg, alink_ans_t *resp)
++{
++	bool ret;
++
++	upgrade_write_image_ack_t *psWriteImageAck;
++
++	psWriteImageAck = (upgrade_write_image_ack_t*)(resp->buffer);
++
++	
++	printf("%s[%d]in\n", __FUNCTION__, __LINE__);
++
++	if (update_state < UPDATE_STAT_DOWNLOAD_IMAGE)
++	{
++		psWriteImageAck->byStatus = UPDATE_RET_STATUS_ERROR;
++		goto out;
++	}
++
++	ret = firmware_set_upgrade_flag(false);
++	if (!ret)
++	{
++		psWriteImageAck->byStatus = UPDATE_RET_ERROR;
++		goto out;
++	}
++
++	ret = firmware_write_start(&sFrimware);
++	if (ret)
++	{
++		psWriteImageAck->byStatus = UPDATE_RET_OK;
++		update_state = UPDATE_STAT_WRITE_IMAGE;
++	}
++	else
++	{
++		psWriteImageAck->byStatus = UPDATE_RET_ERROR;
++	}
++
++out:	
++	resp->msg_len = sizeof(upgrade_write_image_ack_t);	
++	printf("%s[%d]out\n", __FUNCTION__, __LINE__);
++	
++	return RET_OK;
++}
++
++ret_code_t upgrade_write_status(alink_msg_t *msg, alink_ans_t *resp)
++{
++	uint16_t wPermil;
++	int update_percent;
++	bool bret;
++
++	upgrade_write_status_ack_t *psWriteStatusAck;
++
++	printf("%s[%d]\n", __FUNCTION__, __LINE__);
++		
++	psWriteStatusAck = (upgrade_write_status_ack_t*)(resp->buffer);
++
++	if (update_state != UPDATE_STAT_WRITE_IMAGE)
++	{
++		psWriteStatusAck->byStatus = UPDATE_RET_STATUS_ERROR;
++		psWriteStatusAck->wPermil = 0;
++		goto out;
++	}
++
++	update_percent = firmware_write_precent();
++	if (update_percent < 0) //write error
++	{
++		psWriteStatusAck->byStatus = UPDATE_RET_ERROR;
++		psWriteStatusAck->wPermil = 0;
++	}
++	else if (update_percent != 100)
++	{
++		psWriteStatusAck->byStatus = UPDATE_RET_OK;
++		psWriteStatusAck->wPermil = update_percent * 10;
++	}
++	else
++	{
++		firmware_write_end();
++		bret = firmware_set_upgrade_flag(true);
++		if (bret)
++		{
++			psWriteStatusAck->byStatus = UPDATE_RET_COMPLETE;
++			psWriteStatusAck->wPermil = 1000;
++		}
++		else
++		{
++			psWriteStatusAck->byStatus = UPDATE_RET_ERROR;
++			psWriteStatusAck->wPermil = 0;
++		}
++
++		update_state = UPDATE_STAT_NO_START;
++	}
++
++	out:
++	resp->msg_len = sizeof(upgrade_write_status_ack_t);
++	return RET_OK;
++}
++
++ret_code_t upgrade_goto_app(alink_msg_t *msg, alink_ans_t *resp)
++{
++	uint8_t errCode;
++	ret_code_t eRet = RET_OK;
++
++	upgrade_goto_app_ack_t *psGotoAppAck;
++
++	printf("%s[%d]\n", __FUNCTION__, __LINE__);
++
++	psGotoAppAck = (upgrade_goto_app_ack_t*)(resp->buffer);
++
++	psGotoAppAck->byStatus = 0;
++	resp->msg_len = sizeof(upgrade_goto_app_ack_t);
++
++	tcp_client_disconnect();
++
++	#if 0
++	eRet = boot_goto_app( &errCode );
++	if( RET_OK == eRet )
++	{
++		switch( errCode )
++		{
++			case 0:
++				psGotoAppAck->byStatus = 0;
++				resp->msg_len = sizeof(upgrade_goto_app_ack_t);
++				break;
++			case 1:
++				psGotoAppAck->byStatus = 1;
++				resp->msg_len = sizeof(upgrade_goto_app_ack_t);
++				break;
++			case 10:
++				psGotoAppAck->byStatus = 10;
++				resp->msg_len = sizeof(upgrade_goto_app_ack_t);
++				break;
++			default:
++				psGotoAppAck->byStatus = 0x0F;
++				resp->msg_len = sizeof(upgrade_goto_app_ack_t);
++				break;
++		}
++	}
++	else
++	{
++		psGotoAppAck->byStatus = 0x0F;
++		resp->msg_len = sizeof(upgrade_goto_app_ack_t);
++	}
++	#endif
++	
++	return eRet;
++}
++
++ret_code_t upgrade_get_timeout_info(alink_msg_t *msg, alink_ans_t *resp)
++{
++	ret_code_t eRet = RET_OK;
++
++	upgrade_timeout_info_ack_t *psTimeoutInfoAck;
++
++	psTimeoutInfoAck = (upgrade_timeout_info_ack_t*)(resp->buffer);
++
++	psTimeoutInfoAck->chechTimeoutS = 60;
++	psTimeoutInfoAck->imagePkgLenMax = 4096;
++	psTimeoutInfoAck->writeTimeoutS = 10*60;
++	psTimeoutInfoAck->cmdTimeoutMs = 1000;
++	resp->msg_len = sizeof(upgrade_timeout_info_ack_t);
++
++	return eRet;
++}
+diff --git a/OTA/alink/upgrade/upgrade.h b/OTA/alink/upgrade/upgrade.h
+--- a/OTA/alink/upgrade/upgrade.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/alink/upgrade/upgrade.h	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,112 @@
++
++#ifndef UPGRADE_H
++#define UPGRADE_H
++
++#include "../../OTA_common.h"
++#include "../alink.h"
++#include "../../boot_image/firmware.h"
++
++#pragma pack(1)
++	typedef struct upgrade_version_ack
++	{
++		uint32_t 	uRunVersion;
++		char		strAppVersion[64];
++		char		strBootVersion[32];
++		char		strHwVersion[32];
++		char		strProtocolVersion[32];
++	} upgrade_version_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_reset
++	{
++		uint16_t resetCode;
++		uint16_t type;
++	} upgrade_reset_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_request_upgrade
++	{
++		firmware_header_t sFirmwareHeader;
++	} upgrade_request_upgrade_t;
++	typedef struct upgrade_request_upgrade_ack
++	{
++		uint8_t byStatus;
++	} upgrade_request_upgrade_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_download_image
++	{
++		uint32_t 	imageOffset;
++		uint32_t	imageLength;
++		uint8_t		imageData[4096];
++	} upgrade_download_image_t;
++	typedef struct upgrade_download_image_ack
++	{
++		uint8_t byStatus;
++	} upgrade_download_image_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_check_image_ack
++	{
++		uint8_t byStatus;
++	} upgrade_check_image_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_write_image_ack
++	{
++		uint8_t byStatus;
++	} upgrade_write_image_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_write_status_ack
++	{
++		uint8_t 	byStatus;
++		uint16_t	wPermil;
++	} upgrade_write_status_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_goto_app_ack
++	{
++		uint8_t byStatus;
++	} upgrade_goto_app_ack_t;
++#pragma pack()
++
++#pragma pack(1)
++	typedef struct upgrade_timeout_info_ack
++	{
++		uint16_t	imagePkgLenMax;
++		uint16_t	cmdTimeoutMs;
++		uint16_t	chechTimeoutS;
++		uint16_t	writeTimeoutS;
++	} upgrade_timeout_info_ack_t;
++#pragma pack()
++
++ret_code_t upgrade_get_version( alink_msg_t *msg, alink_ans_t *resp );
++ret_code_t upgrade_set_reboot(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_request_upgrade(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_download_image(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_check_image(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_write_image(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_write_status(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_goto_app(alink_msg_t *msg, alink_ans_t *resp);
++ret_code_t upgrade_get_timeout_info(alink_msg_t *msg, alink_ans_t *resp);
++
++#define UPGRADE_COMMAND	\
++{ 0xAB, upgrade_get_version }, \
++{ 0xA1, upgrade_set_reboot }, \
++{ 0xA7, upgrade_request_upgrade }, \
++{ 0xA8, upgrade_download_image }, \
++{ 0xAC, upgrade_check_image }, \
++{ 0xA9, upgrade_write_image }, \
++{ 0xA6, upgrade_write_status }, \
++{ 0xAD, upgrade_goto_app }, \
++{ 0xAE, upgrade_get_timeout_info }, \
++
++#endif /* UPGRADE_H */
+diff --git a/OTA/boot_image/firmware.c b/OTA/boot_image/firmware.c
+--- a/OTA/boot_image/firmware.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/boot_image/firmware.c	2023-04-13 11:50:27.652618229 +0800
+@@ -0,0 +1,585 @@
++
++#include "fs.h"
++#include <linux/types.h>
++#include <div64.h>
++#include <linux/math64.h>
++
++
++#include "firmware.h"
++
++#define FIRMWARE_DIR "/firmware"
++#define FIRMWARE_FILE_NAME "firmware.bin"
++#define FIRMWARE_UPDATE_FLAG "update.flag"
++
++#define FIRMWARE_SET_FS_TYPE()  fs_set_blk_dev("mmc", "0:2", FS_TYPE_FAT)
++static int firmware_wrote_image = 0;
++
++typedef struct file_info_s
++{
++	uint8_t flag[4];
++	uint8_t name[64];
++	uint8_t len[4];
++}file_info_t;
++
++static uint32_t firmware_get_crc32( uint8_t *buf, uint32_t len )
++{
++    uint8_t i;
++    uint8_t* data = buf;
++    uint32_t crc = 0xffffffff;        // Initial value
++    while(len--)
++    {
++        crc ^= *data++;                // crc ^= *data; data++;
++        for (i = 0; i < 8; ++i)
++        {
++            if (crc & 1)
++                crc = (crc >> 1) ^ 0xEDB88320;// 0xEDB88320= reverse 0x04C11DB7
++            else
++                crc = (crc >> 1);
++        }
++    }
++    return ~crc;
++}
++
++bool firmware_set_upgrade_flag( bool bFlag )
++{
++	#if 0
++	uint32_t uUpgradeFlag;
++	if( bFlag )
++		uUpgradeFlag = FIRMWARE_UPGRADE_FLAG;
++	else
++		uUpgradeFlag = FIRMWARE_NOT_UPGRADE_FLAG;
++	if( 0 == FlashNV_Set(FLASH_NV_ID_UPGRADE_FLAG, (void*)&uUpgradeFlag, sizeof(uUpgradeFlag)) )
++		return true;
++	else
++		return false;
++	#endif
++
++	int ret;
++	loff_t len;
++	
++	if (bFlag)
++	{
++		FIRMWARE_SET_FS_TYPE();
++		ret = fs_write(FIRMWARE_UPDATE_FLAG, "update", 0, 6, &len);
++		if (ret)
++		{
++			return false;
++		}
++		else
++		{
++			return true;
++		}
++	}
++	else
++	{
++		FIRMWARE_SET_FS_TYPE();
++		fs_unlink(FIRMWARE_UPDATE_FLAG);
++		return true;
++	}
++}
++
++bool firmware_check_upgrade_flag( void )
++{
++#if 0
++
++	uint32_t uUpgradeFlag;
++
++	if( FlashNV_Get(FLASH_NV_ID_UPGRADE_FLAG, (void*)&uUpgradeFlag, sizeof(uUpgradeFlag), NULL) )
++	{
++		if( FIRMWARE_UPGRADE_FLAG == uUpgradeFlag )
++			return true;
++	}
++	return false;
++		#endif
++}
++
++bool firmware_check_header( firmware_header_t *psFwHeader )
++{
++	uint32_t uCrc;
++
++	do{
++		if( sizeof(firmware_header_t) != psFwHeader->headerLen )
++			break;
++
++		uCrc = firmware_get_crc32( (uint8_t*)psFwHeader, sizeof(firmware_header_t) - sizeof(psFwHeader->headCrc) );
++		if( psFwHeader->headCrc != uCrc )
++			break;
++
++		if( FIRMWARE_BUFFER_SIZE < psFwHeader->firmwareLength )
++			break;
++
++		return true;
++	}while(0);
++
++	return false;
++}
++
++bool firmware_read_header( firmware_header_t *psFwHeader )
++{
++	int32_t iRet = 0;
++	loff_t len;
++
++	FIRMWARE_SET_FS_TYPE();
++	iRet = fs_read( FIRMWARE_FILE_NAME, (uint8_t*)psFwHeader, 0, sizeof(firmware_header_t) , &len);
++	if( 0 == iRet )
++		return true;
++	else
++		return false;
++}
++
++bool firmware_write_header( firmware_header_t *psFwHeader )
++{
++	loff_t len;
++
++	if( firmware_check_header(psFwHeader) )
++	{
++		FIRMWARE_SET_FS_TYPE();
++		if( 0 == fs_write(FIRMWARE_FILE_NAME, (uint8_t*)psFwHeader, 0, sizeof(firmware_header_t), &len) )
++		{
++			memset( (uint8_t*)psFwHeader, 0, sizeof(firmware_header_t) );
++			if( firmware_read_header(psFwHeader) )
++			{
++				if( firmware_check_header(psFwHeader) )
++					return true;
++			}
++		}
++	}
++	return false;
++}
++
++bool firmware_check( firmware_info_t *psFirmware )
++{
++	uint32_t uCrc;
++	if( firmware_check_header( &(psFirmware->sHeader) ) )
++	{
++		if( psFirmware->sHeader.firmwareLength == psFirmware->uOffset )
++		{
++			uCrc = firmware_get_crc32( psFirmware->abyBuffer, psFirmware->uOffset );
++			if ( psFirmware->sHeader.firmwareCrc == uCrc )
++				return true;
++		}
++	}
++	return false;
++}
++
++bool firmware_read( firmware_info_t *psFirmware, uint16_t *pwPermil )
++{
++	int ret;
++	loff_t len;
++	
++	if( firmware_read_header(&(psFirmware->sHeader)) )
++	{
++		if( firmware_check_header(&(psFirmware->sHeader)) )
++		{
++			FIRMWARE_SET_FS_TYPE();
++			fs_size(FIRMWARE_FILE_NAME, &len);
++			psFirmware->uOffset = len - sizeof(psFirmware->sHeader);
++
++			FIRMWARE_SET_FS_TYPE();
++			ret = fs_read(FIRMWARE_FILE_NAME, psFirmware->abyBuffer, sizeof(psFirmware->sHeader), psFirmware->uOffset, &len);
++			if (0 == ret)
++			{
++				return true;
++			}
++		}
++	}
++
++	return false;
++}
++
++#if 0
++bool firmware_write( firmware_info_t *psFirmware, uint16_t *pwPermil )
++{
++	loff_t len;
++	int ret;
++	int i;
++	file_info_t file_info;
++	loff_t file_offset;
++	loff_t file_len;
++	unsigned char full_name[64+64];
++	unsigned long time;
++
++	if (firmware_wrote_image)
++	{
++		printf("%s[%d]image wrote\n", __FUNCTION__, __LINE__);
++		return true;
++	}
++
++	//check
++	if( false == firmware_check(psFirmware) )
++		goto out;
++
++	if( pwPermil )
++		*pwPermil = 20;
++
++	ret = FIRMWARE_SET_FS_TYPE();
++	if (ret)
++	{
++		printf("%s[%d]set fs error:%d\n", __FUNCTION__, __LINE__, ret);
++		return false;
++	}
++
++	//clear firmware dirent
++	if (fs_exists(FIRMWARE_DIR))
++	{
++		struct fs_dir_stream *dir_stream;
++		struct fs_dirent *dirent_file;
++		
++		FIRMWARE_SET_FS_TYPE();
++		dir_stream = fs_opendir(FIRMWARE_DIR);
++		if (dir_stream)
++		{
++			while(1) 
++			{
++				FIRMWARE_SET_FS_TYPE();
++				dirent_file = fs_readdir(dir_stream);
++				if (dirent_file)
++				{
++					if (!strcmp(dirent_file->name, ".") || !strcmp(dirent_file->name, ".."))
++						continue;
++					else
++					{
++						memset(full_name, 0, sizeof(full_name));
++						sprintf(full_name, "%s/%s", FIRMWARE_DIR, dirent_file->name);
++						
++						FIRMWARE_SET_FS_TYPE();
++						fs_unlink(full_name);
++						printf("delete %s\n", full_name);
++					}
++				}
++				else
++				{
++					break;
++				}
++			}
++
++			FIRMWARE_SET_FS_TYPE();
++			fs_closedir(dir_stream);
++		}
++	}
++	else
++	{
++		FIRMWARE_SET_FS_TYPE();
++		fs_mkdir(FIRMWARE_DIR);
++	}
++
++	#if 0
++	FIRMWARE_SET_FS_TYPE();
++	ret = fs_write(FIRMWARE_FILE_NAME, &psFirmware->sHeader, 0, sizeof(firmware_header_t), &len);
++	if (ret)
++	{
++		return false;
++	}
++	
++	FIRMWARE_SET_FS_TYPE();
++	ret = fs_write(FIRMWARE_FILE_NAME, psFirmware->abyBuffer, sizeof(firmware_header_t), psFirmware->uOffset, &len);
++	if (ret)
++	{
++		FIRMWARE_SET_FS_TYPE();
++		fs_unlink(FIRMWARE_FILE_NAME);
++		return false;
++	}
++	#endif
++
++	file_offset = 0;
++	while(file_offset < psFirmware->uOffset)
++	{
++		memcpy(&file_info, psFirmware->abyBuffer + file_offset, sizeof(file_info));
++		if (memcmp(file_info.flag, "AAAA", 4))
++		{
++			goto out;
++		}
++		
++		file_len = (file_info.len[0] << 24) + (file_info.len[1] << 16) + (file_info.len[2] << 8) + file_info.len[3];
++		file_offset += sizeof(file_info);
++		if ((file_len + file_offset) >  psFirmware->uOffset)
++		{
++			goto out;
++		}
++
++		time = get_timer(0);
++		memset(full_name, 0, sizeof(full_name));
++		sprintf(full_name, "%s/%s", FIRMWARE_DIR, file_info.name);
++		FIRMWARE_SET_FS_TYPE();
++		ret = fs_write(full_name, (ulong)&psFirmware->abyBuffer[file_offset], 0, file_len, &len);
++		if (ret)
++		{
++			FIRMWARE_SET_FS_TYPE();
++			fs_unlink(full_name);
++			goto out;
++		}
++
++		file_offset += file_len;
++
++		time = get_timer(time);
++		printf("%s[%d]write file[%s], size:%d, (", __FUNCTION__, __LINE__, full_name, file_len);
++		print_size(div_u64(file_len, time) * 1000, "/s");
++		printf(")\n");
++	}
++
++	#if 0
++	//read check
++	memset( (uint8_t*)&psFirmware->sHeader, 0, sizeof(firmware_header_t) );
++	if( false == firmware_read(psFirmware,pwPermil) )
++		goto out;
++	
++	if( pwPermil )
++		*pwPermil = 950;
++	if( false == firmware_check(psFirmware) )
++		goto out;
++	#endif
++	if( pwPermil )
++		*pwPermil = 1000;
++
++	firmware_wrote_image = 1;
++	return true;
++	
++out:
++	return false;
++}
++
++#endif
++
++static firmware_info_t *psFirmware = NULL;
++static int write_step = 0;
++static int start_write = 0;
++static int write_fail = 0;
++static int write_fail_retry = 0;
++#define WRITE_FAIL_RETRY_CNT (50)
++
++bool firmware_write_is_start(void)
++{
++	return start_write?true:false;
++}
++
++bool firmware_write_start( firmware_info_t *pFirmware)
++{
++	psFirmware = pFirmware;
++	write_step = 0;
++	start_write = 1;
++	write_fail = 0;
++	write_fail_retry = WRITE_FAIL_RETRY_CNT;
++	return true;
++}
++
++int firmware_write_precent(void)
++{
++	if (write_fail)
++	{
++		return -1;
++	}
++	
++	return write_step;
++}
++
++void write_speed(const char *file, int line)
++{
++	unsigned char full_name[64+64];
++	unsigned long time;
++	loff_t len;
++	loff_t file_len = 1*1024*1024;
++	int ret;
++	
++	time = get_timer(0);
++	memset(full_name, 0, sizeof(full_name));
++	sprintf(full_name, "%s/%s", FIRMWARE_DIR, "test");
++	FIRMWARE_SET_FS_TYPE();
++	ret = fs_write(full_name, (ulong)0xC00000, 0, file_len, &len);
++	if (ret)
++	{
++		FIRMWARE_SET_FS_TYPE();
++		fs_unlink(full_name);
++		return ;
++	}
++
++	time = get_timer(time);
++	printf("%s[%d]write file[%s], size:%d, (", file, line, full_name, file_len);
++	print_size(div_u64(file_len, time) * 1000, "/s");
++	printf(")\n");
++}
++
++static int clear_dirent(const char *dir_name)
++{
++	int ret;
++	unsigned char full_name[64+64];
++	struct fs_dir_stream *dir_stream;
++	struct fs_dirent *dirent_file;
++		
++	ret = FIRMWARE_SET_FS_TYPE();
++	if (ret)
++	{
++		printf("%s[%d]set fs error:%d\n", __FUNCTION__, __LINE__, ret);
++		return -1;
++	}
++	
++	if (fs_exists(dir_name))
++	{
++
++		FIRMWARE_SET_FS_TYPE();
++		dir_stream = fs_opendir(dir_name);
++		if (dir_stream)
++		{
++			while(1) 
++			{
++				FIRMWARE_SET_FS_TYPE();
++				dirent_file = fs_readdir(dir_stream);
++				if (dirent_file)
++				{
++					if (!strcmp(dirent_file->name, ".") || !strcmp(dirent_file->name, ".."))
++						continue;
++					else
++					{
++						memset(full_name, 0, sizeof(full_name));
++						sprintf(full_name, "%s/%s", dir_name, dirent_file->name);
++						
++						FIRMWARE_SET_FS_TYPE();
++						fs_unlink(full_name);
++						printf("delete %s\n", full_name);
++					}
++				}
++				else
++				{
++					break;
++				}
++			}
++
++			FIRMWARE_SET_FS_TYPE();
++			fs_closedir(dir_stream);
++		}
++	}
++	else
++	{
++		FIRMWARE_SET_FS_TYPE();
++		fs_mkdir(dir_name);
++	}
++
++	return 0;
++}
++
++bool firmware_write( void )
++{
++	loff_t len;
++	int ret;
++	file_info_t file_info;
++	loff_t file_len;
++	unsigned char full_name[64+64];
++	unsigned long time;
++	static loff_t file_offset = 0;
++	unsigned long mem_addr = 0;
++
++	if (write_fail)
++	{
++		//write fail, need to start again.
++		return false;
++	}
++	
++	if (write_step >= 100)
++	{
++		return true;
++	}
++
++	if (0 == write_step)
++	{
++		ret = clear_dirent(FIRMWARE_DIR);
++		if (ret)
++		{
++			goto out;
++		}
++		
++		write_step++;	
++		file_offset = 0;
++	}
++	else 
++	{
++		if(file_offset < psFirmware->uOffset)
++		{			
++			memcpy(&file_info, psFirmware->abyBuffer + file_offset, sizeof(file_info));
++			if (memcmp(file_info.flag, "AAAA", 4))
++			{
++				goto out;
++			}
++			
++			file_len = (file_info.len[0] << 24) + (file_info.len[1] << 16) + (file_info.len[2] << 8) + file_info.len[3];
++			file_offset += sizeof(file_info);
++			if ((file_len + file_offset) >  psFirmware->uOffset)
++			{
++				goto out;
++			}
++
++			time = get_timer(0);
++			memset(full_name, 0, sizeof(full_name));
++			sprintf(full_name, "%s/%s", FIRMWARE_DIR, file_info.name);
++
++			//使用对齐的地址，FAT写入才快，否则很慢.4K对齐
++			mem_addr = ((unsigned long)psFirmware->abyBuffer + psFirmware->uOffset + 0xFFF) & 0xFFFFF000;
++			memcpy(mem_addr, &psFirmware->abyBuffer[file_offset], file_len);
++			FIRMWARE_SET_FS_TYPE();
++			ret = fs_write(full_name, mem_addr, 0, file_len, &len);
++			if (ret)
++			{
++				FIRMWARE_SET_FS_TYPE();
++				fs_unlink(full_name);
++				goto out;
++			}
++
++			file_offset += file_len;
++
++			time = get_timer(time);
++			printf("%s[%d]write file[%s], size:%d, (", __FUNCTION__, __LINE__, full_name, file_len);
++			print_size(div_u64(file_len, time) * 1000, "/s");
++			printf(")\n");
++
++			write_step = file_offset * 99 /psFirmware->uOffset + 1;
++		}
++	}
++
++	write_fail_retry = WRITE_FAIL_RETRY_CNT;
++	return true;
++	
++out:
++	if (0 == write_fail_retry)
++	{
++		write_fail = 1;
++	}
++	else
++	{
++		write_fail_retry--;
++	}
++	
++	return false;
++}
++
++bool firmware_write_end( void )
++{
++	psFirmware = NULL;
++	write_step = 0;
++	start_write = 0;
++	write_fail = 0;
++}
++
++
++bool firmware_recv_init( firmware_info_t *psFirmware, firmware_header_t *psFwHeader , uint8_t *buffer)
++{
++	if( firmware_check_header(psFwHeader) )
++	{
++		memcpy( &(psFirmware->sHeader), psFwHeader, sizeof(firmware_header_t) );
++		psFirmware->abyBuffer = buffer;
++		psFirmware->uOffset = 0;
++		return true;
++	}
++	return false;
++}
++
++bool firmware_recv_data( firmware_info_t *psFirmware, uint32_t uOffset, uint8_t* pbyData, uint32_t uLen )
++{
++	if( psFirmware->uOffset == uOffset )
++	{
++		if( FIRMWARE_BUFFER_SIZE >= psFirmware->uOffset + uLen )
++		{
++			memcpy( psFirmware->abyBuffer + psFirmware->uOffset, pbyData, uLen );
++			psFirmware->uOffset += uLen;
++			return true;
++		}
++	}
++	return false;
++}
+diff --git a/OTA/boot_image/firmware.h b/OTA/boot_image/firmware.h
+--- a/OTA/boot_image/firmware.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/boot_image/firmware.h	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,52 @@
++
++#ifndef FIRMWARE_H
++#define FIRMWARE_H
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <stdbool.h>
++
++#define FIRMWARE_BUFFER_SIZE	(500*1024*1024)
++
++#pragma pack(1)
++	typedef struct firmware_header
++	{
++		uint32_t	headerLen;
++		uint32_t	headerVersion;
++		uint32_t	firmwareOffset;
++		uint32_t	firmwareLength;
++		uint32_t	firmwareCrc;
++		uint32_t	corpInfoLen;
++		uint8_t		corpInfo[32];
++		uint32_t	devNameLen;
++		uint8_t		devName[32];
++		uint32_t	fwVersionLen;
++		uint8_t		fwVersion[64];
++		uint8_t		reserve[92];
++		uint32_t	headCrc;
++	} firmware_header_t;
++#pragma pack()
++
++typedef struct firmware_info
++{
++	uint8_t 			*abyBuffer;
++	uint32_t 			uOffset;
++	firmware_header_t	sHeader;
++}firmware_info_t;
++
++bool firmware_set_upgrade_flag( bool bFlag );
++bool firmware_check_upgrade_flag( void );
++
++bool firmware_check_header( firmware_header_t *psFwHeader );
++bool firmware_read_header( firmware_header_t *psFwHeader );
++bool firmware_write_header( firmware_header_t *psFwHeader );
++bool firmware_check( firmware_info_t *psFirmware );
++bool firmware_read( firmware_info_t *psFirmware, uint16_t *pwPermil );
++bool firmware_write( void /*firmware_info_t *psFirmware, uint16_t *pwPermil */);
++
++bool firmware_recv_init( firmware_info_t *psFirmware, firmware_header_t *psFwHeader  , uint8_t *buffer);
++bool firmware_recv_data( firmware_info_t *psFirmware, uint32_t uOffset, uint8_t* pbyData, uint32_t uLen );
++
++#endif
+diff --git a/OTA/boot_image/Makefile b/OTA/boot_image/Makefile
+--- a/OTA/boot_image/Makefile	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/boot_image/Makefile	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2000-2006
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
++
++#obj-y += boot_image.o
++obj-y += firmware.o
++#obj-y += boot_image.o
+diff --git a/OTA/Makefile b/OTA/Makefile
+--- a/OTA/Makefile	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/Makefile	2023-04-13 11:45:03.308293642 +0800
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2000-2006
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
++
++obj-y += OTA.o
++obj-y += alink/
++obj-y += boot_image/
++obj-y += tcp_client/
++
+diff --git a/OTA/OTA.c b/OTA/OTA.c
+--- a/OTA/OTA.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/OTA.c	2023-04-13 11:45:03.312293691 +0800
+@@ -0,0 +1,52 @@
++/**
++ * OTA base on TCP and alink
++ *
++ **/
++#include <stdio.h>
++#include <stdint.h>
++
++#include "net.h"
++
++#include "alink/alink.h"
++#include "alink/alink_recv/alink_recv.h"
++
++#include "tcp_client/tcp_client.h"
++
++static alink_recv_info_t sAlinkTcpRecv;
++
++extern ret_code_t alink_handler( alink_msg_t *psMsg, ret_code_t (*pe_send)(uint8_t *pbyData, uint32_t uLen), uint32_t uOutTimeMs );
++
++static ret_code_t alink_tcp_send( uint8_t *pbyData, uint32_t uLen )
++{
++	return tcp_client_send_data( pbyData, uLen, 1000 );
++}
++
++static void alink_tcp_handler( uint8_t *pbyData, uint32_t uLen )
++{
++	alink_handler( (alink_msg_t*)(pbyData), alink_tcp_send, 0xFFFFFFFF );
++}
++
++static void alink_tcp_recv( uint8_t *pbyData, uint32_t uLen )
++{
++	alink_recv_data( &sAlinkTcpRecv, pbyData, uLen );
++}
++
++
++void OTA_start( /*uint32_t mem_addr */)
++{
++	net_boot_file_size = 0;
++	alink_init();
++	alink_recv_init( &sAlinkTcpRecv, alink_tcp_handler );
++	tcp_client_register_recv_cbk( alink_tcp_recv );
++	tcp_client_connect(8060);
++}
++
++int OTA_process(void)
++{	
++	if (firmware_write_is_start())
++	{
++		firmware_write();
++	}
++}
++
++
+diff --git a/OTA/OTA_common.h b/OTA/OTA_common.h
+--- a/OTA/OTA_common.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/OTA_common.h	2023-04-13 11:45:03.312293691 +0800
+@@ -0,0 +1,33 @@
++/**
++ *
++ * OTA common 
++ *
++ **/
++
++#ifndef __OTA_COMMON_H_
++#define __OTA_COMMON_H_
++
++
++
++
++
++
++
++
++#define RADAR_ERRORNO_BASE (-1000)
++typedef enum radar_ret_code {
++    RET_OK = 0,
++    RET_GENERAL_ERR = RADAR_ERRORNO_BASE - 1,
++    RET_SYSTEM_ERR = RADAR_ERRORNO_BASE - 2,
++    RET_NOT_SUPPORT = RADAR_ERRORNO_BASE - 3,
++    RET_NO_RESOURCE = RADAR_ERRORNO_BASE - 4,
++    RET_INVALID_PARAM = RADAR_ERRORNO_BASE - 5,
++} ret_code_t;
++
++
++
++
++
++#endif
++
++
+diff --git a/OTA/tcp_client/Makefile b/OTA/tcp_client/Makefile
+--- a/OTA/tcp_client/Makefile	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/tcp_client/Makefile	2023-04-13 11:45:03.312293691 +0800
+@@ -0,0 +1,8 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2000-2006
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
++
++obj-y += tcp_client.o
++
+diff --git a/OTA/tcp_client/tcp_client.c b/OTA/tcp_client/tcp_client.c
+--- a/OTA/tcp_client/tcp_client.c	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/tcp_client/tcp_client.c	2023-04-13 11:21:11.720164200 +0800
+@@ -0,0 +1,374 @@
++/**
++ * TCP client
++ *
++ *
++ **/
++#include <command.h>
++#include <common.h>
++#include <display_options.h>
++#include <env.h>
++#include <image.h>
++#include <mapmem.h>
++#include <net.h>
++#include <net/tcp.h>
++#include <linux/types.h>
++
++enum tcp_client_state {
++	TCP_CLIENT_CLOSED,
++	TCP_CLIENT_CONNECTING,
++	TCP_CLIENT_CONNECTED,
++	TCP_CLIENT_TRANSFERRING,
++	TCP_CLIENT_TRANSFERRED
++};
++
++static int our_port;
++static int timeout_count;
++
++static unsigned int packets;
++
++static unsigned int initial_data_seq_num;
++
++static enum  tcp_client_state current_state;
++
++#define TCP_CLIENT_TIMEOUT 2000UL
++static unsigned int timeout = TCP_CLIENT_TIMEOUT;
++
++static enum net_loop_state loop_state;
++
++/* Timeout retry parameters */
++static u8 retry_action;			/* actions for TCP retry */
++static unsigned int retry_tcp_ack_num;	/* TCP retry acknowledge number*/
++static unsigned int retry_tcp_seq_num;	/* TCP retry sequence number */
++static int retry_len;			/* TCP retry length */
++
++
++#define SERVER_PORT (8060)
++#define TCP_RETRY_COUNT	30
++
++static void (*tcp_client_recv_cbk)(uint8_t *pbyData, uint32_t uLen) ;
++
++static int tcp_disconnect = 0;
++
++/**
++ * store_block() - store block in memory
++ * @src: source of data
++ * @offset: offset
++ * @len: length
++ */
++static inline int store_block(uchar *src, unsigned int offset, unsigned int len, unsigned int tcp_ack_num, unsigned int tcp_seq_num)
++{
++	if (len == 0)
++	{
++		return 0;
++	}
++
++	if (tcp_client_recv_cbk)
++	{
++		retry_tcp_ack_num = tcp_ack_num;
++		retry_tcp_seq_num = tcp_seq_num;
++	
++		tcp_client_recv_cbk(src, len);
++	}
++	
++	return 0;
++}
++
++/**
++ * tcp_send_stored() - tcp response dispatcher
++ *
++ * WARNING, This, and only this, is the place in tcp.c where
++ * SEQUENCE NUMBERS are swapped between incoming (RX)
++ * and outgoing (TX).
++ * Procedure tcp_handler() is correct for RX traffic.
++ */
++static void tcp_client_send_stored(void)
++{
++	u8 action = retry_action;
++	int len = retry_len;
++	unsigned int tcp_ack_num = retry_tcp_ack_num + len;
++	unsigned int tcp_seq_num = retry_tcp_seq_num;
++	uchar *ptr, *offset;
++
++	switch (current_state) {
++	case TCP_CLIENT_CLOSED:
++		printf("TCP: send SYN\n");
++		current_state = TCP_CLIENT_CONNECTING;
++		net_send_tcp_packet(0, SERVER_PORT, our_port, action,
++				    tcp_seq_num, tcp_ack_num);
++		packets = 0;
++		break;
++	case TCP_CLIENT_CONNECTING:
++		net_send_tcp_packet(0, SERVER_PORT, our_port, action,
++				    tcp_seq_num, tcp_ack_num);
++
++		current_state = TCP_CLIENT_CONNECTED;
++		break;
++	case TCP_CLIENT_CONNECTED:
++	case TCP_CLIENT_TRANSFERRING:
++	case TCP_CLIENT_TRANSFERRED:
++		net_send_tcp_packet(0, SERVER_PORT, our_port, action,
++				    tcp_seq_num, tcp_ack_num);
++		break;
++	}
++}
++
++static void tcp_client_send(u8 action, unsigned int tcp_ack_num,
++		      unsigned int tcp_seq_num, int len)
++{
++	retry_action = action;
++	retry_tcp_ack_num = tcp_ack_num;
++	retry_tcp_seq_num = tcp_seq_num;
++	retry_len = len;
++
++	tcp_client_send_stored();
++}
++
++void tcp_client_fail(char *error_message, unsigned int tcp_seq_num,
++	       unsigned int tcp_ack_num, u8 action)
++{
++	printf("TCP: Transfer Fail - %s\n", error_message);
++	net_set_timeout_handler(0, NULL);
++	tcp_client_send(action, tcp_seq_num, tcp_ack_num, 0);
++}
++
++void tcp_client_success(u8 action, unsigned int tcp_seq_num,
++		  unsigned int tcp_ack_num, int len, int packets)
++{
++	printf("Packets received %d, Transfer Successful\n", packets);
++	tcp_client_send(action, tcp_seq_num, tcp_ack_num, len);
++}
++
++/*
++ * Interfaces of U-BOOT
++ */
++static void tcp_client_timeout_handler(void)
++{
++	if (tcp_disconnect)
++	{
++		printf("%s[%d]send FIN\n", __FUNCTION__, __LINE__);
++		
++		tcp_client_send(TCP_FIN, retry_tcp_seq_num, retry_tcp_ack_num, 0);
++		net_set_state(NETLOOP_SUCCESS);
++	}
++	else if (++timeout_count > TCP_RETRY_COUNT) {
++		puts("\nRetry count exceeded; starting again\n");
++		tcp_client_send(TCP_RST, 0, 0, 0);
++		net_start_again();
++	} else {
++		puts("T ");
++		net_set_timeout_handler(timeout +
++					TCP_CLIENT_TIMEOUT * timeout_count,
++					tcp_client_timeout_handler);
++		tcp_client_send_stored();
++	}
++}
++
++/**
++ * tcp_client_handler() - handler of tcp
++ * @pkt: the pointer to the payload
++ * @tcp_seq_num: tcp sequence number
++ * @action_and_state: TCP state
++ * @tcp_ack_num: tcp acknowledge number
++ * @len: length of the payload
++ *
++ * In the "application push" invocation, the TCP header with all
++ * its information is pointed to by the packet pointer.
++ */
++static void tcp_client_handler(uchar *pkt, unsigned int tcp_seq_num,
++			 struct in_addr action_and_state,
++			 unsigned int tcp_ack_num, unsigned int len)
++{
++	enum tcp_state tcp_state = tcp_get_tcp_state();
++	u8 action = action_and_state.s_addr;
++
++	net_set_timeout_handler(timeout, tcp_client_timeout_handler);
++	packets++;
++
++	switch (current_state) {
++	case TCP_CLIENT_CLOSED:
++		printf("TCP: Handler: Error!, State wrong\n");
++		break;
++	case TCP_CLIENT_CONNECTING:
++		printf("TCP: Connecting In len=%x, Seq=%x, Ack=%x\n",
++			   len, tcp_seq_num, tcp_ack_num);
++		if (!len) {
++			if (tcp_state == TCP_ESTABLISHED) {
++				printf("TCP: Cting, send, len=%x\n", len);
++				tcp_client_send(action, tcp_seq_num, tcp_ack_num,
++					  len);
++			} else {
++				printf("%.*s", len,  pkt);
++				tcp_client_fail("TCP: Handler Connected Fail\n",
++					  tcp_seq_num, tcp_ack_num, action);
++			}
++		}
++		break;
++	case TCP_CLIENT_CONNECTED:
++		printf("TCP: Connected seq=%x, len=%x\n",
++			   tcp_seq_num, len);
++		initial_data_seq_num = tcp_seq_num;
++		current_state = TCP_CLIENT_TRANSFERRING;
++		///break; //no need!!
++	case TCP_CLIENT_TRANSFERRING:
++		if (tcp_disconnect)
++		{
++			printf("TCP: Transferring, seq=%x, ack=%x,len=%x\n",
++			   	tcp_seq_num, tcp_ack_num, len);
++
++			current_state = TCP_CLIENT_TRANSFERRED;
++			tcp_client_send(TCP_ACK | TCP_FIN,
++				  tcp_seq_num, tcp_ack_num, 0);
++			break;
++		}
++
++		if (tcp_seq_num >= initial_data_seq_num &&
++		    store_block(pkt, tcp_seq_num - initial_data_seq_num, len, tcp_seq_num, tcp_ack_num) != 0) {
++			tcp_client_fail("TCP: store error\n",
++				  tcp_seq_num, tcp_ack_num, action);
++			return;
++		}
++
++		switch (tcp_state) {
++		case TCP_FIN_WAIT_2:
++			tcp_client_send(TCP_ACK, tcp_seq_num, tcp_ack_num, len);
++			fallthrough;
++		case TCP_SYN_SENT:
++		case TCP_CLOSING:
++		case TCP_FIN_WAIT_1:
++		case TCP_CLOSED:
++			net_set_state(NETLOOP_FAIL);
++			break;
++		case TCP_ESTABLISHED:
++			tcp_client_send(TCP_ACK, tcp_seq_num, tcp_ack_num,
++				  len);
++			loop_state = NETLOOP_SUCCESS;
++			break;
++		case TCP_CLOSE_WAIT:     /* End of transfer */
++			current_state = TCP_CLIENT_TRANSFERRED;
++			tcp_client_send(action | TCP_ACK | TCP_FIN,
++				  tcp_seq_num, tcp_ack_num, len);
++			break;
++		}
++
++		break;
++	case TCP_CLIENT_TRANSFERRED:
++		printf("Packets received %d, Transfer Successful\n", packets);
++		net_set_state(loop_state);
++		break;
++	}
++}
++
++#define RANDOM_PORT_START 1024
++#define RANDOM_PORT_RANGE 0x4000
++
++/**
++ * random_port() - make port a little random (1024-17407)
++ *
++ * Return: random port number from 1024 to 17407
++ *
++ * This keeps the math somewhat trivial to compute, and seems to work with
++ * all supported protocols/clients/servers
++ */
++static unsigned int random_port(void)
++{
++	return RANDOM_PORT_START + (get_timer(0) % RANDOM_PORT_RANGE);
++}
++
++int tcp_client_connect(uint16_t server_port)
++{
++	if (NULL == tcp_client_recv_cbk)
++	{
++		printf("call tcp_client_register_recv_cbk first\n");
++		return -1;
++	}
++	
++	printf("TCP Server %pI4; our IP %pI4\n",
++		   &net_server_ip, &net_ip);
++
++	tcp_disconnect = 0;
++
++	/* Check if we need to send across this subnet */
++	if (net_gateway.s_addr && net_netmask.s_addr) {
++		struct in_addr our_net;
++		struct in_addr server_net;
++
++		our_net.s_addr = net_ip.s_addr & net_netmask.s_addr;
++		server_net.s_addr = net_server_ip.s_addr & net_netmask.s_addr;
++		if (our_net.s_addr != server_net.s_addr)
++			printf("TCP: sending through gateway %pI4",
++				   &net_gateway);
++	}
++
++	net_set_timeout_handler(timeout, tcp_client_timeout_handler);
++	tcp_set_tcp_handler(tcp_client_handler);
++
++	timeout_count = 0;
++	current_state = TCP_CLIENT_CLOSED;
++
++	our_port = random_port();
++
++	/*
++	 * Zero out server ether to force arp resolution in case
++	 * the server ip for the previous u-boot command, for example dns
++	 * is not the same as the web server ip.
++	 */
++
++	memset(net_server_ethaddr, 0, 6);
++
++	tcp_client_send(TCP_SYN, 0, 0, 0);
++
++	return 0;
++}
++
++int tcp_client_send_data( uint8_t *pbyData, uint32_t uLen, uint32_t uTimeOut )
++{
++	int len = retry_len;
++	unsigned int tcp_ack_num = retry_tcp_ack_num;
++	unsigned int tcp_seq_num = retry_tcp_seq_num;
++
++	uchar *ptr, *offset;
++
++	//printf("send seq:%d, ack:%d\n", tcp_seq_num, tcp_ack_num);
++
++	ptr = net_tx_packet + net_eth_hdr_size() +
++		IP_TCP_HDR_SIZE + TCP_TSOPT_SIZE + 2;
++	offset = ptr;
++
++	memcpy(offset, pbyData, uLen);
++	offset += uLen;
++
++	net_send_tcp_packet((offset - ptr), SERVER_PORT, our_port,
++			    TCP_PUSH, tcp_seq_num, tcp_ack_num);
++
++	retry_action = TCP_PUSH;
++	retry_len = uLen;
++
++	return uLen;
++}
++
++
++int tcp_client_register_recv_cbk( void (*pv_cbk)(uint8_t *pbyData, uint32_t uLen) )
++{
++	tcp_client_recv_cbk = pv_cbk;
++	return 0;
++}
++
++
++int tcp_client_disconnect(void)
++{
++	//if (current_state != TCP_CLIENT_CLOSED)
++	{
++		//tcp_client_send(TCP_RST, 0, 0, 0);
++		tcp_disconnect = 1;
++	}
++	//net_set_state(NETLOOP_SUCCESS);
++	
++	return 0;
++}
++
++int tcp_client_check_error(void)
++{
++	return 0;
++}
++
++
+diff --git a/OTA/tcp_client/tcp_client.h b/OTA/tcp_client/tcp_client.h
+--- a/OTA/tcp_client/tcp_client.h	1970-01-01 08:00:00.000000000 +0800
++++ b/OTA/tcp_client/tcp_client.h	2023-04-13 11:45:03.312293691 +0800
+@@ -0,0 +1,38 @@
++/**
++ *
++ * TCP client 
++ *
++ **/
++
++#ifndef __TCP_CLIENT_H_H
++#define __TCP_CLIENT_H_H
++
++
++
++#include <stdint.h>
++#include <linux/types.h>
++
++
++
++
++
++
++
++
++
++
++extern int tcp_client_connect(uint16_t port);
++extern int tcp_client_disconnect(void);
++
++extern int tcp_client_send_data( uint8_t *pbyData, uint32_t uLen, uint32_t uTimeOut );
++
++extern int tcp_client_register_recv_cbk( void (*pv_cbk)(uint8_t *pbyData, uint32_t uLen) );
++
++extern int tcp_client_check_error(void);
++
++
++
++
++#endif
++
++

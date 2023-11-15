@@ -1,0 +1,895 @@
+#include <pthread.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <math.h>
+#include <sys/time.h>
+#include <semaphore.h>
+#include <mqueue.h>
+#include <errno.h>
+#include <linux/ioctl.h>
+#include <sys/ioctl.h>
+#include "data_path.h"
+#include "../../bsp/reg/pl_reg.h"
+
+#define DCACHE_NODE_NAME "/dev/simple-dcache"
+#define SIMPLE_DCACHE_SET  _IO('s', 0)
+#define SIMPLE_DCACHE_UNSET  _IO('s', 1)
+#define SIMPLE_DCACHE_FLUSH_RANGE  _IO('s', 2)
+#define PL_FREQUENCE_TIME_US	(8000)
+
+
+static int simple_dcache_fd = -1;
+
+#include "../Detection/detection_interface.h"
+#include "../Tracking/tracking_interface.h"
+
+/*******************************************************************************
+* @author  : liuxuhong
+* @version : V1.0
+* @date    : 2023-06-20
+* @note    : datapath irq handler
+*******************************************************************************/
+typedef struct data_path_irq_task
+{
+	void 		*psArg;
+	void 		(*pv_handler)( void *psArg );
+	char 		*strIrqName;
+	
+	unsigned int eRunState;	
+	int 		fd;
+	pthread_t 	pid;
+}data_path_irq_task_t;
+
+static void *data_path_irq_task( void* psArg )
+{
+	data_path_irq_task_t *psHandle = (data_path_irq_task_t*)psArg;
+	
+	for( ; psHandle->eRunState; )
+	{
+		int ret;
+		int fd = psHandle->fd;
+		fd_set fdset;
+		struct timeval time;
+		time.tv_sec = 1;
+		time.tv_usec = 0;
+		FD_ZERO( &fdset );
+		FD_SET( fd, &fdset );
+		ret = select(fd+1, &fdset, NULL, NULL, &time);
+		if((0 < ret) && (0 < FD_ISSET(fd, &fdset)))
+		{
+			if( psHandle->pv_handler )
+				psHandle->pv_handler( psHandle->psArg );
+		}
+	}
+	
+	close( psHandle->fd );
+	psHandle->fd = -1;
+	
+	return NULL;
+}
+
+static int data_path_irq_init( data_path_irq_task_t *psHandle, 
+									char *strIrqName, 
+									void (*pv_handler)(void *psArg), 
+									void *psArg )
+{
+	int eRet = -1;
+	
+	if( 0 == psHandle->eRunState )
+	{
+		psHandle->strIrqName = strIrqName;
+		psHandle->pv_handler = pv_handler;
+		psHandle->psArg		 = psArg;
+	
+		psHandle->fd = open( psHandle->strIrqName, O_RDONLY );
+		if( 0 <= psHandle->fd )
+		{
+			psHandle->eRunState = 1;
+			eRet = pthread_create( &(psHandle->pid), 
+									NULL, 
+									data_path_irq_task, 
+									psHandle );
+			if( 0 != eRet )
+			{
+				psHandle->eRunState = 0;
+				close( psHandle->fd );
+				psHandle->fd = -1;
+			}
+		}
+	}
+	else
+	{
+		eRet = 0;
+	}
+	
+	return eRet;
+}
+
+/*******************************************************************************
+* @author  : liuxuhong
+* @version : V1.0
+* @date    : 2023-06-20
+* @note    : data path module
+*******************************************************************************/
+typedef struct
+{
+	unsigned int eCmd;
+	union
+	{
+		data_path_data_t sData;
+	}sParam;
+}data_path_cmd_t;
+
+typedef struct data_path_module_task
+{
+	void 		*psArg;
+	void 		(*pv_cmd_task)( void *psArg, data_path_cmd_t *psCmd );
+	char 		*strName;
+
+	unsigned int eRunState;
+	mqd_t 		mq;
+	pthread_t 	pid;
+}data_path_module_task_t;
+
+static void *data_path_module_task( void* psArg )
+{
+	data_path_module_task_t *psModule = (data_path_module_task_t*)psArg;
+
+	for( ; psModule->eRunState; )
+	{
+		data_path_cmd_t sCmd;
+		struct mq_attr attr;
+		mq_getattr( psModule->mq, &attr );
+//		printf( "[%s %d] psModule->mq = %d, attr.mq_msgsize = %d\r\n", __func__, __LINE__, psModule->mq, attr.mq_msgsize );
+		int count = mq_receive( psModule->mq, (char*)&sCmd, attr.mq_msgsize, NULL);
+		if( sizeof(data_path_cmd_t) == count )
+		{
+			psModule->pv_cmd_task( psModule->psArg, &sCmd );
+		}
+	}
+
+	mq_close( psModule->mq );
+	mq_unlink( psModule->strName );
+	psModule->mq = -1;
+
+	printf( "data_path_module_task\r\n" );
+	return NULL;
+}
+
+static int data_path_module_init( data_path_module_task_t *psModule, 
+						char *strName,
+						void (*pv_cmd_task)(void *psArg, data_path_cmd_t *psCmd), 
+						void *psArg )
+{
+	int eRet = -1;
+	
+	if( 0 == psModule->eRunState )
+	{
+		psModule->strName 		= strName;
+		psModule->pv_cmd_task 	= pv_cmd_task;
+		psModule->psArg		 	= psArg;
+	
+		struct mq_attr attr;
+		attr.mq_maxmsg = 10;
+		attr.mq_msgsize = sizeof(data_path_cmd_t);
+		psModule->mq = mq_open( psModule->strName, O_CREAT|O_RDWR|O_CLOEXEC, 0666, &attr );
+		if( 0 <= psModule->mq )
+		{
+			printf( "[%s %d] psModule->mq = %d\r\n", __func__, __LINE__, psModule->mq );
+			psModule->eRunState = 1;
+			if( 0 == pthread_create(&(psModule->pid), NULL, data_path_module_task, psModule) )
+			{
+				eRet = 0;
+			}
+			else
+			{
+				psModule->eRunState = 0;
+				mq_close( psModule->mq );
+				mq_unlink( psModule->strName );
+				psModule->mq = -1;
+			}
+		}
+	}
+	else
+	{
+		eRet = 0;
+	}
+	
+	return eRet;
+}
+
+static int data_path_module_send_cmd( data_path_module_task_t *psModule,
+										data_path_cmd_t *psCmd )
+{
+	int eRet = -1;
+//	printf( "[%s %d] psModule->eRunState = %d\r\n", __func__, __LINE__, psModule->eRunState );
+	if( 0 != psModule->eRunState )
+	{
+		struct mq_attr attr;
+		mq_getattr( psModule->mq, &attr );
+		eRet = mq_send( psModule->mq, (char*)psCmd, attr.mq_msgsize, 0 );
+//		printf( "[%s %d] psModule->mq = %d\r\n", __func__, __LINE__, psModule->mq );
+	}
+
+	return eRet;
+}
+
+/*******************************************************************************
+* @author  : liuxuhong
+* @version : V1.0
+* @date    : 2023-06-20
+* @note    : cpib irq handler
+*******************************************************************************/
+#include "../../bsp/reg/pl_reg.h"
+static bool is_pil_mode = false;
+static char data_path_pil_status = DATA_PATH_PIL_STATUS_DONE;
+
+static void data_path_cpib_handler( void *psArg )
+{
+	static int wave_pos = 0;
+
+//	if( sDataPathOutEn > 0 )
+	{
+		if( 10 <= wave_pos )
+			wave_pos = 0;
+		else
+			wave_pos++;
+//		printf( "wave_pos %d\r\n", wave_pos );
+		if(!is_pil_mode) {
+			PL_REG_WRITE( PL_REG_WAVE_POSITION_OFFSET, wave_pos );
+		}
+	}
+
+	struct timespec tTime;
+        clock_gettime(CLOCK_MONOTONIC, &tTime);
+        uint64_t ulTimesp = 1000*tTime.tv_sec + tTime.tv_nsec/1000000;
+
+        PL_REG_WRITE( 0x105c, (ulTimesp>>0) & 0xFFFFFFFF );
+        PL_REG_WRITE( 0x1060, (ulTimesp>>32) & 0xFFFFFFFF );
+
+	//beam
+}
+
+data_path_irq_task_t sDataPathCpib = { 0 };
+static int data_path_cpib_init( void )
+{
+	return	data_path_irq_init( &sDataPathCpib, "/dev/PL-cpib_event", 
+								data_path_cpib_handler, NULL );
+}
+
+/*******************************************************************************
+* @author  : liuxuhong
+* @version : V1.0
+* @date    : 2023-06-20
+* @note    : rdmap irq handler
+*******************************************************************************/
+#include <unistd.h>
+#include <sys/syscall.h>
+
+#define MMAP_READ_CP (0)
+///"/dev/shared-mem"
+#define PL_SHARED_MEM_DEV_NAME "/dev/mem"
+#define PL_SHARED_MEM_OFFSET (0x60000000)
+
+static char *pvDataBase = NULL;
+int fd_pl_data = 0;
+static uint8_t abyDataPl[11][PL_WAVE_POSITION_UINT_SIZE] = { 0 };
+static void data_path_rdmap_handler( void *psArg )
+{
+	data_path_module_task_t *psModule = (data_path_module_task_t *)psArg;
+	data_path_cmd_t sCmd;
+
+//	printf( "[%s %d]\r\n", __func__, __LINE__ );
+
+	static uint32_t frameID = 0;
+	uint32_t pos = PL_REG_READ(0x2058);
+
+//	printf( "pos %d\r\n", pos );
+
+	data_path_pil_status = DATA_PATH_PIL_STATUS_DONE;
+	static int uCountNum = 0;
+	if( 2 > uCountNum && !is_pil_mode)
+	{
+		uCountNum++;
+		return ;
+	}
+
+	if( 255 < pos )
+	{
+		printf( "pos overflow %d\r\n", pos );
+		return ;
+	}
+
+//	void *addr = (void*)pvDataBase + (pos*2*1024*1024);
+	
+//	msync( addr, 2*1024*1024, MS_SYNC);
+
+//	printf( "base %p, pos %d, addr %p\r\n", pvDataBase, pos, addr );
+
+	struct timespec start_time, end_time;
+	long long elapsed_time;
+
+	clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+#if MMAP_READ_CP
+	memcpy( abyDataPl[pos], pvDataBase+(pos*PL_WAVE_POSITION_UINT_SIZE), PL_WAVE_POSITION_UINT_SIZE );
+#else
+	int ret = lseek(fd_pl_data, PL_WAVE_POSITION_ADDRESS+(pos*PL_WAVE_POSITION_UINT_SIZE), SEEK_SET);
+	if( ret < 0 )
+		printf( "cp lseek ret %d\r\n", ret );
+	ret = read( fd_pl_data, abyDataPl[pos], PL_WAVE_POSITION_UINT_SIZE );
+	if( ret < 0 )
+		printf( "cp read ret %d\r\n", ret );
+#endif
+
+	clock_gettime(CLOCK_MONOTONIC, &end_time);
+	
+	elapsed_time = ((end_time.tv_sec - start_time.tv_sec) * 1000000000 +
+						   (end_time.tv_nsec - start_time.tv_nsec));
+
+//	printf( "cp 2M time %lld ns\r\n", elapsed_time );
+
+	sCmd.sParam.sData.adc_src = (void*)abyDataPl + pos*(PL_WAVE_POSITION_UINT_SIZE);
+	sCmd.sParam.sData.adc_src_len = 512*1024;
+	sCmd.sParam.sData.adc_iq = (void*)abyDataPl + pos*(PL_WAVE_POSITION_UINT_SIZE) + 512*1024;
+	sCmd.sParam.sData.adc_iq_len = 512*1024;
+	sCmd.sParam.sData.rdmap = (void*)abyDataPl + pos*(PL_WAVE_POSITION_UINT_SIZE) + 1024*1024;
+	sCmd.sParam.sData.rdmap_len = 256*1024;
+
+	struct data_path_info* psInfo = (struct data_path_info*)((void*)abyDataPl + pos*(2*1024*1024) + 1024*1024 + 512*1024 + 3*1024);
+		
+	memcpy( &(sCmd.sParam.sData.sInfo), (void*)abyDataPl + pos*(2*1024*1024) + 1024*1024 + 512*1024 + 3*1024, sizeof(sCmd.sParam.sData.sInfo) );
+	sCmd.sParam.sData.info_len = sizeof(sCmd.sParam.sData.sInfo);
+	sCmd.sParam.sData.frameID = sCmd.sParam.sData.sInfo.frameID;
+	uint32_t* puAdc = (uint32_t*)(sCmd.sParam.sData.adc_src);
+	uint32_t* puAdcIq = (uint32_t*)(sCmd.sParam.sData.adc_iq);
+	uint32_t* puRdmap = (uint32_t*)(sCmd.sParam.sData.rdmap);
+//	printf( "frameID %d %d %d %d %d\r\n", sCmd.sParam.sData.frameID, psInfo->frameID, puAdc[0], puAdcIq[0], puRdmap[0] );
+
+//	printf( "pos %d, adc data %x\r\n", pos, *((uint32_t*)sCmd.sParam.sData.adc_src) );
+//	printf( "pos %d, iq data %x\r\n", pos, *((uint32_t*)sCmd.sParam.sData.adc_iq) );
+//	printf( "pos %d, rdmap data %x\r\n", pos, *((uint32_t*)sCmd.sParam.sData.rdmap) );
+
+	data_path_module_send_cmd( psModule, &sCmd );
+}
+
+data_path_irq_task_t sDataPathRdmap = { 0 };
+static int data_path_rdmap_init( data_path_module_task_t *psModule )
+{
+	int fd;
+
+//	fd = open("/dev/mem", O_RSYNC|O_RDWR);
+#if MMAP_READ_CP
+	fd_pl_data = open(PL_SHARED_MEM_DEV_NAME, O_RSYNC|O_RDWR);
+#else
+	fd_pl_data = open("/dev/mem", O_RDWR);
+#endif
+	if (fd_pl_data < 0)
+	{
+		perror("pl data map error");
+		return -1;
+	}
+
+#if MMAP_READ_CP
+	pvDataBase = (void *)mmap(NULL, (512*1024*1024), PROT_READ|PROT_WRITE, MAP_SHARED, fd_pl_data, PL_WAVE_POSITION_ADDRESS);
+
+	close( fd_pl_data );
+#endif
+
+	return	data_path_irq_init( &sDataPathRdmap, "/dev/PL-rdmap_irq_event",
+								data_path_rdmap_handler, psModule );
+}
+
+/*******************************************************************************
+* @author  : liuxuhong
+* @version : V1.0
+* @date    : 2023-06-07
+* @note    : push out adc/rdmap data through the network (udp)
+*******************************************************************************/
+#define RAW_ADC_LEN (512*1024)
+#define RDMAP_DATA_LEN (256*1024)
+
+#include "../../srv/protocol/protocol_dbgdat.h"
+#include "../../srv/protocol/protocol_if.h"
+protocol_adc_data_t sAdcSendBuf = {0};
+protocol_rdmap_data_t sRdmapSendBuf = {0};
+volatile static int sDataPathOutEn = 0 ;
+
+volatile uint8_t adc_send_busy_flag = 0;
+
+protocol_object_list_detected_t gDetectList[1] = { 0 };
+protocol_object_list_tracked_t gTrackList[1] = { 0 };
+protocol_object_list_dot_cohe_t gDotCoheList[1] = { 0 };
+protocol_beam_scheduling_t gBeamInfo[1] = { 0 };
+protocol_cfg_param_t gConfigParmInfo[1] = { 0 };
+protocol_radar_platfrom_info_t gPlatformInfo[1] = { 0 };
+protocol_radar_status_t gRadarStatus[1] = { 0 };
+
+#include <sys/time.h>
+#include <stdio.h>
+#include <time.h>
+long long GetCurrentTimeMillis() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec * 1000LL + tv.tv_usec / 1000);
+}
+
+void data_path_adc_clear_busy(void *data, uint32_t len, uint32_t result)
+{
+	(void)data;
+	(void)len;
+	(void)result;
+	adc_send_busy_flag = 0;
+}
+#include"..//Tracking/src/target_process/dispatch/include/dispatch.h"
+uint32_t wholeSpaceScanCycleCntPil = 0;
+data_path_module_task_t sDataPathAlgTask = { 0 };
+static volatile uint8_t bFlagAlgBusy = 0;
+static void data_path_alg_cmd_task( void *psArg,
+										data_path_cmd_t *psCmd )
+{
+	struct timespec start_time, end_time;
+	long long elapsed_time;
+	sDispatchInst* dispatch_inst;
+	// 获取???始时???
+	clock_gettime(CLOCK_MONOTONIC, &start_time);
+	if (is_pil_mode)
+	{
+		dispatch_inst = (sDispatchInst*)gAlgData->dispatch_inst;
+		dispatch_inst->dispatchOutput->frameID = psCmd->sParam.sData.sInfo.frameID;
+		dispatch_inst->dispatchOutput->timestamp = psCmd->sParam.sData.sInfo.timestamp;
+		dispatch_inst->dispatchOutput->aziBeamSin = (int16_t)(sinf(psCmd->sParam.sData.sInfo.azimuth * M_PI / 180) * INT16_SCALE);
+		dispatch_inst->dispatchOutput->eleBeamSin = (int16_t)(sinf(psCmd->sParam.sData.sInfo.elevation * M_PI / 180) * INT16_SCALE);
+		dispatch_inst->dispatchOutput->wholeSpaceScanCycleFinalBeamFlag = psCmd->sParam.sData.sInfo.wholeSpaceScanCycleFinalBeamFlag;
+		if (dispatch_inst->dispatchOutput->wholeSpaceScanCycleFinalBeamFlag)
+		{
+			wholeSpaceScanCycleCntPil++;
+		}
+		dispatch_inst->dispatchOutput->wholeSpaceScanCycleCnt = wholeSpaceScanCycleCntPil;
+		dispatch_inst->dispatchOutput->trackTwsTasFlag = psCmd->sParam.sData.sInfo.trackTwsTasFlag;
+		gConfigParmInfo->aziScanCenter = psCmd->sParam.sData.sInfo.aziScanCenter;
+		gConfigParmInfo->aziScanScope = psCmd->sParam.sData.sInfo.aziScanScope;
+		gConfigParmInfo->eleScanCenter = psCmd->sParam.sData.sInfo.eleScanCenter;
+		gConfigParmInfo->eleScanScope = psCmd->sParam.sData.sInfo.eleScanScope;
+	}
+	// 执行???要计时的代码???
+	// ...
+	bFlagAlgBusy = 1;
+	DataPathCB( &(psCmd->sParam.sData) );
+	runDetectAlgBlocking( &(psCmd->sParam.sData) );
+	runTrackingAlg();
+	bFlagAlgBusy = 0;
+
+	// 获取结束时间
+	clock_gettime(CLOCK_MONOTONIC, &end_time);
+
+	// 计算经过的时???
+	elapsed_time = ((end_time.tv_sec - start_time.tv_sec) * 1000000000LL +
+				   (end_time.tv_nsec - start_time.tv_nsec))/1000;
+	// 输出经过的时间（以微秒为单位???
+//		printf("Elapsed time: %lld us\n", elapsed_time);
+
+}
+
+#include "../../service/storage/storage.h"
+uint8_t eSysStatus = 0;
+static void data_path_push_adc_cmd_task( void *psArg,
+										data_path_cmd_t *psCmd )
+{
+//	printf( "[%s %d] %d\r\n", __func__, __LINE__, sDataPathOutEn );
+	if( 5 >= sDataPathOutEn && 0 <= sDataPathOutEn )
+	{
+		eSysStatus = 2;
+		if( bFlagAlgBusy )
+		{
+			storage_log( "data_path", LOG_LEVEL_WARNING, "alg timeover %d", psCmd->sParam.sData.frameID );
+		}
+		else
+		{
+			data_path_module_send_cmd( &sDataPathAlgTask, psCmd );
+		}
+	}
+	else
+	{
+		eSysStatus = 0;
+	}
+
+	if ( 1 == sDataPathOutEn && 0 == adc_send_busy_flag )
+	{
+//		printf( "[%s %d] psCmd->sParam.sData.adc_src = %p\r\n", __func__, __LINE__, psCmd->sParam.sData.adc_src );
+//		memcpy( sAdcSendBuf.rawData, psCmd->sParam.sData.adc_src, RAW_ADC_LEN );
+		memcpy( sAdcSendBuf.rawData, psCmd->sParam.sData.adc_src, RAW_ADC_LEN );
+		memcpy( sAdcSendBuf.info, &(psCmd->sParam.sData.sInfo), sizeof(data_path_info_t) );
+
+		int16_t az_deg = 0, el_deg = 0;
+		az_deg = (int16_t)(round(asinf(gBeamInfo[0].aziBeamSin * (0.0000305185f)) * (57.29577951308232f)));
+		el_deg = (int16_t)(round(asinf(gBeamInfo[0].eleBeamSin * (0.0000305185f)) * (57.29577951308232f)));
+		/*az_deg = ((az_deg >= 0) ? (az_deg) : (az_deg - 1));
+		el_deg = ((el_deg >= 0) ? (el_deg) : (el_deg - 1));*/
+
+#if 0
+        data_path_info_t *info = (data_path_info_t*)(sAdcSendBuf.info);
+        info->frameID = psCmd->sParam.sData.frameID;
+		
+        info->waveType = gBeamInfo[0].waveType;
+        info->timestamp = GetCurrentTimeMillis();
+        info->azimuth = (uint16_t)(az_deg + 180);
+        info->elevation = (uint16_t)(el_deg + 180);
+        info->aziScanCenter = gConfigParmInfo[0].aziScanCenter;
+        info->aziScanScope = gConfigParmInfo[0].aziScanScope;
+        info->eleScanCenter = gConfigParmInfo[0].eleScanCenter;
+        info->eleScanScope = gConfigParmInfo[0].eleScanScope;
+        info->trackTwsTasFlag = gBeamInfo[0].trackTwsTasFlag;
+        info->wholeSpaceScanCycleFinalBeamFlag = gBeamInfo[0].wholeSpaceScanCycleFinalBeamFlag;
+#endif
+
+//		runTrackingAlg();
+
+//		printf( "[%s %d] psCmd->sParam.sData.adc_src = %p\r\n", __func__, __LINE__, psCmd->sParam.sData.adc_src );
+		protocol_adcpkg_set_head( &sAdcSendBuf,
+								  psCmd->sParam.sData.frameID ,
+								  PIT_SRC_ADC_DATA,
+								  RAW_ADC_LEN);
+
+		adc_send_busy_flag = 1;
+		int	ret = protocol_send_adc_data( &sAdcSendBuf, data_path_adc_clear_busy );
+	}
+	else if( 2 == sDataPathOutEn )
+	{
+#if 0
+		struct timespec start_time, end_time;
+		long long elapsed_time;
+	
+		// 获取???始时???
+		clock_gettime(CLOCK_MONOTONIC, &start_time);
+	
+		// 执行???要计时的代码???
+		// ...
+		DataPathCB( &(psCmd->sParam.sData) );
+		runDetectAlgBlocking();
+		runTrackingAlg();
+
+		// 获取结束时间
+		clock_gettime(CLOCK_MONOTONIC, &end_time);
+	
+		// 计算经过的时???
+		elapsed_time = ((end_time.tv_sec - start_time.tv_sec) * 1000000000LL +
+					   (end_time.tv_nsec - start_time.tv_nsec))/1000;
+	
+		// 输出经过的时间（以微秒为单位???
+//		printf("Elapsed time: %lld us\n", elapsed_time);
+#endif
+	}
+	else if( 3 == sDataPathOutEn && 0 == adc_send_busy_flag )
+	{
+		static int swap_buffer[RDMAP_DATA_LEN/sizeof(int)]; //FIXME: memcpy take too much time
+		memcpy(swap_buffer, psCmd->sParam.sData.rdmap , RDMAP_DATA_LEN );
+		memcpy( sRdmapSendBuf.rawData, swap_buffer,RDMAP_DATA_LEN );
+		memcpy( sRdmapSendBuf.info, &(psCmd->sParam.sData.sInfo), sizeof(data_path_info_t) );
+
+		int16_t az_deg = 0, el_deg = 0;
+		az_deg = (int16_t)(round(asinf(gBeamInfo[0].aziBeamSin * (0.0000305185f)) * (57.29577951308232f)));
+		el_deg = (int16_t)(round(asinf(gBeamInfo[0].eleBeamSin * (0.0000305185f)) * (57.29577951308232f)));
+
+#if 0
+        data_path_info_t *info = (data_path_info_t*)(sRdmapSendBuf.info);
+        info->frameID = psCmd->sParam.sData.frameID;
+        info->waveType = gBeamInfo[0].waveType;
+        info->timestamp = GetCurrentTimeMillis();
+        info->azimuth = (uint16_t)(az_deg + 180);
+        info->elevation = (uint16_t)(el_deg + 180);
+        info->aziScanCenter = gConfigParmInfo[0].aziScanCenter;
+        info->aziScanScope = gConfigParmInfo[0].aziScanScope;
+        info->eleScanCenter = gConfigParmInfo[0].eleScanCenter;
+        info->eleScanScope = gConfigParmInfo[0].eleScanScope;
+        info->trackTwsTasFlag = gBeamInfo[0].trackTwsTasFlag;
+        info->wholeSpaceScanCycleFinalBeamFlag = gBeamInfo[0].wholeSpaceScanCycleFinalBeamFlag;
+#endif
+
+//		runTrackingAlg();
+
+		protocol_rdmappkg_set_head( &sRdmapSendBuf,
+									psCmd->sParam.sData.frameID ,
+									PIT_RDMAP_DATA,
+									RDMAP_DATA_LEN);
+
+		adc_send_busy_flag = 1;
+		int ret = protocol_send_rdmap_data( &sRdmapSendBuf, data_path_adc_clear_busy);
+	}
+	else if ( 4 == sDataPathOutEn && 0 == adc_send_busy_flag )
+	{
+//		printf( "[%s %d] psCmd->sParam.sData.adc_src = %p\r\n", __func__, __LINE__, psCmd->sParam.sData.adc_src );
+//		memcpy( sAdcSendBuf.rawData, psCmd->sParam.sData.adc_src, RAW_ADC_LEN );
+		memcpy( sAdcSendBuf.rawData, psCmd->sParam.sData.adc_iq, RAW_ADC_LEN );
+		memcpy( sAdcSendBuf.info, &(psCmd->sParam.sData.sInfo), sizeof(data_path_info_t) );
+
+		int16_t az_deg = 0, el_deg = 0;
+		az_deg = (int16_t)(round(asinf(gBeamInfo[0].aziBeamSin * (0.0000305185f)) * (57.29577951308232f)));
+		el_deg = (int16_t)(round(asinf(gBeamInfo[0].eleBeamSin * (0.0000305185f)) * (57.29577951308232f)));
+#if 0
+        data_path_info_t *info = (data_path_info_t*)(sAdcSendBuf.info);
+        info->frameID = psCmd->sParam.sData.frameID;
+		
+        info->waveType = gBeamInfo[0].waveType;
+        info->timestamp = GetCurrentTimeMillis();
+        info->azimuth = (uint16_t)(az_deg + 180);
+        info->elevation = (uint16_t)(el_deg + 180);
+        info->aziScanCenter = gConfigParmInfo[0].aziScanCenter;
+        info->aziScanScope = gConfigParmInfo[0].aziScanScope;
+        info->eleScanCenter = gConfigParmInfo[0].eleScanCenter;
+        info->eleScanScope = gConfigParmInfo[0].eleScanScope;
+        info->trackTwsTasFlag = gBeamInfo[0].trackTwsTasFlag;
+        info->wholeSpaceScanCycleFinalBeamFlag = gBeamInfo[0].wholeSpaceScanCycleFinalBeamFlag;
+#endif
+//		runTrackingAlg();
+
+//		printf( "[%s %d] psCmd->sParam.sData.adc_src = %p\r\n", __func__, __LINE__, psCmd->sParam.sData.adc_src );
+		protocol_adcpkg_set_head( &sAdcSendBuf,
+								  psCmd->sParam.sData.frameID ,
+								  PIT_IQ_ADC_DATA,
+								  RAW_ADC_LEN);
+
+		adc_send_busy_flag = 1;
+		int ret = protocol_send_adc_data( &sAdcSendBuf, data_path_adc_clear_busy );
+	} else if(5 == sDataPathOutEn && 0 == adc_send_busy_flag) {
+		
+		memcpy( sAdcSendBuf.rawData, psCmd->sParam.sData.adc_src, RAW_ADC_LEN );
+		memcpy( sAdcSendBuf.info, &(psCmd->sParam.sData.sInfo), sizeof(data_path_info_t) );
+		int16_t az_deg = 0, el_deg = 0;
+		az_deg = (int16_t)(asinf(gBeamInfo[0].aziBeamSin * (0.0000305185f)) * (57.29577951308232f) + 0.5);
+		el_deg = (int16_t)(asinf(gBeamInfo[0].eleBeamSin * (0.0000305185f)) * (57.29577951308232f) + 0.5);
+		az_deg = ((az_deg >= 0) ? (az_deg) : (az_deg - 1));
+		el_deg = ((el_deg >= 0) ? (el_deg) : (el_deg - 1));
+		protocol_adcpkg_set_head( &sAdcSendBuf,
+								  psCmd->sParam.sData.frameID ,
+								  PIT_SRC_ADC_DATA,
+								  RAW_ADC_LEN);
+
+		adc_send_busy_flag = 1;
+		int	ret = protocol_send_adc_data( &sAdcSendBuf, data_path_adc_clear_busy );
+
+		while( adc_send_busy_flag );
+
+		int swap_buffer[RDMAP_DATA_LEN/sizeof(int)]; //FIXME: memcpy take too much time
+		memcpy(swap_buffer, psCmd->sParam.sData.rdmap , RDMAP_DATA_LEN );
+		memcpy( sRdmapSendBuf.rawData, swap_buffer,RDMAP_DATA_LEN );
+		memcpy( sRdmapSendBuf.info, &(psCmd->sParam.sData.sInfo), sizeof(data_path_info_t) );
+		
+		int16_t az_deg_r = 0, el_deg_r = 0;
+		az_deg_r = (int16_t)(asinf(gBeamInfo[0].aziBeamSin * (0.0000305185f)) * (57.29577951308232f) + 0.5);
+		el_deg_r = (int16_t)(asinf(gBeamInfo[0].eleBeamSin * (0.0000305185f)) * (57.29577951308232f) + 0.5);
+		az_deg_r = ((az_deg_r >= 0) ? (az_deg_r) : (az_deg_r - 1));
+		el_deg_r = ((el_deg_r >= 0) ? (el_deg_r) : (el_deg_r - 1));
+
+
+		protocol_rdmappkg_set_head( &sRdmapSendBuf,
+									psCmd->sParam.sData.frameID ,
+									PIT_RDMAP_DATA,
+									RDMAP_DATA_LEN);
+
+		adc_send_busy_flag = 1;
+		ret = protocol_send_rdmap_data( &sRdmapSendBuf, data_path_adc_clear_busy);
+	}
+}
+
+data_path_module_task_t sDataPathPushAdcTask = { 0 };
+static int data_path_push_adc_init( void )
+{
+	data_path_module_init( &sDataPathAlgTask, "/data_path_alg", data_path_alg_cmd_task, NULL );
+	return data_path_module_init( &sDataPathPushAdcTask, "/data_path_push_adc", data_path_push_adc_cmd_task, NULL );
+}
+
+data_path_module_task_t sDataPathpilTask = { 0 };
+static void data_path_pil_set_data( void *psArg,
+										data_path_cmd_t *psCmd )
+{
+	static int pos = 0;
+	int ret = 0;
+
+//	APP_LOG_DEBUG("%s, pos = %d\n", __FUNCTION__, pos);
+	pil_status_cbk pil_set_status = (pil_status_cbk)psArg;
+	if(!psCmd || !pil_set_status) {
+		APP_LOG_ERROR("pil invalid parameter!\n");
+		return;
+	}
+
+	ret = simple_dcache_flush_range(PL_WAVE_POSITION_ADDRESS+(pos*PL_WAVE_POSITION_UINT_SIZE), pos*PL_WAVE_POSITION_UINT_SIZE);
+	if(0 != ret) {
+		APP_LOG_INFO("flush dcache fail %d\n", ret);
+	}
+
+	//data(dac and info) from pil wil be set to pl here.
+#if MMAP_READ_CP
+	memcpy(pvDataBase+(pos*PL_WAVE_POSITION_UINT_SIZE), psCmd->sParam.sData.adc_src , psCmd->sParam.sData.adc_src_len);
+#else
+	ret = lseek(fd_pl_data, PL_WAVE_POSITION_ADDRESS+(pos*PL_WAVE_POSITION_UINT_SIZE), SEEK_SET);
+	if( ret < 0 ) {
+		APP_LOG_ERROR( "lseek ps fail, ret %d\r\n", ret );
+		return;
+	}
+	ret = write( fd_pl_data, psCmd->sParam.sData.adc_src, psCmd->sParam.sData.adc_src_len);
+	if( ret < 0 ) {
+		APP_LOG_ERROR( "write adc to pl fail, ret %d, errno%d, %s\r\n", ret, errno, strerror(errno));
+		return;
+	}
+#endif
+	PL_REG_WRITE(PL_REG_INFO_WAVETYPE_OFFSET, psCmd->sParam.sData.sInfo.waveType);
+	PL_REG_WRITE(PL_REG_INFO_TIMESTAMP_L_OFFSET, psCmd->sParam.sData.sInfo.timestamp & 0xffffffff);
+	PL_REG_WRITE(PL_REG_INFO_TIMESTAMP_H_OFFSET, psCmd->sParam.sData.sInfo.timestamp & 0xffffffff00000000);
+	PL_REG_WRITE(PL_REG_INFO_AZIMUTH_OFFSET, psCmd->sParam.sData.sInfo.azimuth);
+	PL_REG_WRITE(PL_REG_INFO_ELEVATION_OFFSET, psCmd->sParam.sData.sInfo.elevation);
+	PL_REG_WRITE(PL_REG_INFO_AZISCANCENTER_OFFSET, psCmd->sParam.sData.sInfo.aziScanCenter);
+	PL_REG_WRITE(PL_REG_INFO_AZISCANSCOPE_OFFSET, psCmd->sParam.sData.sInfo.aziScanScope);
+	PL_REG_WRITE(PL_REG_INFO_ELESCANCENTER_OFFSET, psCmd->sParam.sData.sInfo.eleScanCenter);
+	PL_REG_WRITE(PL_REG_INFO_ELESCANSCOPE_OFFSET, psCmd->sParam.sData.sInfo.eleScanScope);
+	PL_REG_WRITE(PL_REG_INFO_TRACKTWSTASFLAG_OFFSET, psCmd->sParam.sData.sInfo.trackTwsTasFlag);
+	PL_REG_WRITE(PL_REG_INFO_LASTWAVE_OFFSET, psCmd->sParam.sData.sInfo.wholeSpaceScanCycleFinalBeamFlag);
+
+	PL_REG_WRITE(PL_REG_WAVE_POSITION_OFFSET, pos);//set number of wave
+	data_path_pil_status = DATA_PATH_PIL_STATUS_LOADED;
+	PL_REG_WRITE(PL_REG_PIL_TRIGGER_OFFSET, PL_REG_ENABLE);//enable trigger pl
+	pil_set_status(false);//set pil to next frame aviable.
+	PL_REG_WRITE(PL_REG_PIL_TRIGGER_OFFSET, PL_REG_DISABLE);//disable trigger pl
+	pos++;
+	if(pos > 10) {
+		pos = 0;
+	}
+	//APP_LOG_DEBUG("%s, exit\n", __FUNCTION__);
+}
+
+int data_path_pil_init(pil_status_cbk cbk)
+{
+	sDataPathpilTask.psArg = (void*)cbk;
+	PL_REG_WRITE(PL_REG_ADC_MUX_S_OFFSET, PL_WAVE_MODE_PIL);//pil mode
+	is_pil_mode = true;
+	return data_path_module_init( &sDataPathpilTask, "/data_path_pil_task", data_path_pil_set_data, cbk );
+}
+
+int data_path_pil_uinit(void)
+{
+	sDataPathpilTask.eRunState = 0;
+	PL_REG_WRITE(PL_REG_ADC_MUX_S_OFFSET, PL_WAVE_MODE_NORMAL);//switch to normal mode
+	is_pil_mode = false;
+
+	return 0;
+}
+
+int check_datapath_pil_status(void)
+{
+	struct timespec start_time = {0};
+	static long long elapsed_time = 0;
+	long long start_time_us = 0;
+
+	//APP_LOG_DEBUG("%s> data_path_pil_status = %d\n", __FUNCTION__, data_path_pil_status);
+
+	if(data_path_pil_status == DATA_PATH_PIL_STATUS_DONE) {
+		return DATA_PATH_PIL_STATUS_DONE;
+	}
+
+	if(data_path_pil_status == DATA_PATH_PIL_STATUS_LOADED) {
+		clock_gettime(CLOCK_MONOTONIC, &start_time);
+		start_time_us = (start_time.tv_sec*1000000000LL + start_time.tv_nsec)/1000;
+		if((start_time_us - elapsed_time) > PL_FREQUENCE_TIME_US) {
+			elapsed_time = start_time_us;
+			data_path_pil_status = DATA_PATH_PIL_STATUS_DONE;
+			return DATA_PATH_PIL_STATUS_DONE;
+		}
+	}
+
+	return data_path_pil_status;
+}
+
+//users will see this interface.
+int data_path_set_pil_data(data_path_pil_data *dppd)
+{
+	int ret = 0;
+	data_path_cmd_t psCmd = {0};
+
+	if(NULL == dppd->pilinfodat || dppd->pilinfodat_len <= 0 || NULL == dppd->piladcdat || dppd->piladcdat_len <= 0) {
+		return RET_INVALID_PARAM;
+	}
+
+	data_path_pil_status = DATA_PATH_PIL_STATUS_INFORM;
+	psCmd.sParam.sData.adc_src = dppd->piladcdat;
+	psCmd.sParam.sData.adc_src_len = dppd->piladcdat_len;
+	memcpy(&psCmd.sParam.sData.sInfo, dppd->pilinfodat, sizeof(data_path_info_t));
+	psCmd.sParam.sData.info_len = dppd->pilinfodat_len;
+	psCmd.sParam.sData.frameID = dppd->frameid;
+//	APP_LOG_DEBUG("send thread cmd(pil) to pl handle thread\n");
+	ret = data_path_module_send_cmd(&sDataPathpilTask, &psCmd);
+
+	return RET_OK;
+}
+
+/*******************************************************************************
+* @author  : liuxuhong
+* @version : V1.0
+* @date    : 2023-06-07
+* @note    : api
+*******************************************************************************/
+int data_path_init( void )
+{
+	data_path_push_adc_init();
+	data_path_rdmap_init( &sDataPathPushAdcTask );
+	data_path_cpib_init();
+
+	return 0;
+}
+
+#include "../../common/table_2d/table_2d.h"
+s32 data_path_start(s32 type)
+{
+//	PL_REG_WRITE(0x200, 0x1B88);
+//    PL_REG_WRITE(0x200, 0x2406);
+//    PL_REG_WRITE(0x200, 0x2518);
+    PL_REG_WRITE(0x1028, 0x80000000);//enable ADC sampling
+
+	printf( "enable ADC sampling\r\n" );
+}
+
+s32 data_path_stop(s32 type)
+{
+	
+}
+
+void data_path_out_en(s32 type)
+{
+	sDataPathOutEn = type;
+}
+
+void simple_dcache_init(void)
+{
+	int ret = 0;
+
+	ret = open(DCACHE_NODE_NAME, O_RDWR);
+	if(0 > ret) {
+		APP_LOG_INFO("open dcache device %s fail, ret = %d\n", DCACHE_NODE_NAME, ret);
+		return;
+	}
+	simple_dcache_fd = ret;
+	ret = ioctl(simple_dcache_fd, SIMPLE_DCACHE_SET, 0);
+	if(0 != ret) {
+		APP_LOG_INFO("warming!!!set dcache fail, ret = %d\n", ret);
+		return;
+	}
+
+	APP_LOG_DEBUG("dcache init success\n");
+}
+
+void simple_dcache_uinit(void)
+{
+	int ret = -1;
+
+	if(simple_dcache_fd < 0) {
+		return;
+	}
+
+	ret = ioctl(simple_dcache_fd, SIMPLE_DCACHE_UNSET, 0);
+	if(0 != ret) {
+		return;
+	}
+}
+
+int simple_dcache_flush_range(unsigned long upaddr, unsigned long ulen)
+{
+	int ret = -1;
+	struct dcache_range_info {
+    	unsigned long paddr;
+    	unsigned long len;
+	} udri = {
+		.paddr = upaddr,
+		.len = ulen
+	};
+
+	if(simple_dcache_fd < 0) {
+		return -1;
+	}
+
+	ret = ioctl(simple_dcache_fd, SIMPLE_DCACHE_FLUSH_RANGE, &udri);
+	if(0 != ret) {
+		return ret;
+	}
+
+	return ret;
+}
+

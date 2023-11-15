@@ -1,0 +1,11 @@
+#
+#
+#aux_source_directory(. DIR_SCRS)
+
+#add_subdirectory(c2_network)
+#add_subdirectory(DataPath)
+
+aux_source_directory(. DIR_LIB_SRCS)
+add_library(sfbus_cli ${DIR_LIB_SRCS})
+
+set(SFBUS_CLI_LIBS sfbus_cli PARENT_SCOPE)

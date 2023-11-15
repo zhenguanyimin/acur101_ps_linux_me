@@ -1,0 +1,88 @@
+stages:
+  - build_app
+  - build_kernel
+  - release
+
+build_app:
+  stage: build_app
+  image: 10.240.34.2:10000/cibuilder/aarch64-none-gcc:v1
+  tags:
+    - aarch64-none-gcc
+  only:
+    refs:
+      - branches
+      - merge_requests
+      - tags
+  script:
+    - |
+      COMPILE_DATE=$(date "+%Y%m%d%H%M%S")
+      if [[ -n "${CI_COMMIT_TAG}" ]];then
+        if [[ "$(echo $CI_COMMIT_TAG | cut -d"-" -f-1)" =~ ^T[0-9]$ ]];then
+          version="ACUR100-${CI_COMMIT_TAG}-${COMPILE_DATE}"
+        else
+          version="ACUR100-T4-${CI_COMMIT_TAG}-${COMPILE_DATE}"
+        fi
+      else
+        version="ACUR100-T4-V99.99.99-${COMPILE_DATE}"
+      fi
+    - bash app/build_ci.sh -DVERSION=${version}
+    - echo ${version} > app/build/version.txt
+  artifacts:
+    paths:
+      - app/build/linux_app.elf
+      - app/build/version.txt
+    expire_in: 2 weeks
+
+build_kernel:
+  stage: build_kernel
+  image: 10.240.34.2:10000/cibuilder/xilinx-petalinux:v1
+  tags:
+    - petalinux
+  only:
+    refs:
+      - branches
+      - merge_requests
+      - tags
+    changes:
+      - "os/sdk/**/*"
+  script:
+    - source /data/Xilinx/petalinux/2022.2/settings.sh
+    - version=$(cat app/build/version.txt)
+    - bash os/sdk/build_ci.sh all "$(echo $VERSION | cut -d"-" -f2)"
+    - bash tools/mk_ota.sh ${version}
+    - cp os/sdk/images/linux/BOOT.BIN .
+    - cp fpga/acur101_fpga*.bin .
+  artifacts:
+    paths:
+      - "*OTA.bin"
+      - BOOT.BIN
+      - acur101_fpga*.bin
+    expire_in: 2 weeks
+
+release:
+  stage: release
+  image: 10.240.34.2:10000/cibuilder/release-cli:v1
+  tags: 
+    - aarch64-none-gcc
+  only:
+    refs:
+      - tags
+  variables:
+    PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/acur101/${CI_COMMIT_TAG}"
+  script:
+    - app_package=$(ls *OTA.bin)
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file ${app_package} ${PACKAGE_REGISTRY_URL}/${app_package}
+    - fpga_package=$(ls acur101_fpga*.bin)
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file ${fpga_package} ${PACKAGE_REGISTRY_URL}/${fpga_package}
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file BOOT.BIN ${PACKAGE_REGISTRY_URL}/BOOT.BIN
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file app/build/linux_app.elf ${PACKAGE_REGISTRY_URL}/linux_app.elf
+    - |
+      release-cli create --name "${CI_COMMIT_TAG}" --description "Create release for tag ${CI_COMMIT_TAG}" --tag-name "${CI_COMMIT_TAG}" \
+      --assets-link "{\"url\":\"${PACKAGE_REGISTRY_URL}/${app_package}\",\"name\":\"${app_package}\"}" \
+      --assets-link "{\"url\":\"${PACKAGE_REGISTRY_URL}/BOOT.BIN\",\"name\":\"BOOT.BIN\"}" \
+      --assets-link "{\"url\":\"${PACKAGE_REGISTRY_URL}/linux_app.elf\",\"name\":\"linux_app.elf\"}" \
+      --assets-link "{\"url\":\"${PACKAGE_REGISTRY_URL}/${fpga_package}\",\"name\":\"${fpga_package}\"}"

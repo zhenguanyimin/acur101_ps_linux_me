@@ -1,0 +1,31 @@
+diff -upNr git/include/env_default.h git_new/include/env_default.h
+--- git/include/env_default.h	2023-05-20 16:18:43.997762054 +0800
++++ git_new/include/env_default.h	2023-05-20 16:18:34.848314819 +0800
+@@ -19,11 +19,11 @@
+ #define CONFIG_UPDATE_SYSTEM \
+ "if test -e ${OTA_partition} /firmware/Image; then load ${OTA_partition} 0xE00000 /firmware/Image; fatsize ${OTA_partition} /firmware/Image; else load ${boot_partition} 0xE00000 Image;fatsize ${boot_partition} Image;fi; \
+ setenv Image_size ${filesize}; \
+-if test -e ${OTA_partition} /firmware/rootfs.cpio.gz;then load ${OTA_partition} 0x2400000 /firmware/rootfs.cpio.gz; fatsize ${OTA_partition} /firmware/rootfs.cpio.gz; else load ${boot_partition} 0x2400000 rootfs.cpio.gz;fatsize ${boot_partition} rootfs.cpio.gz;fi; \
++if test -e ${OTA_partition} /firmware/rootfs.cpio.gz;then load ${OTA_partition} 0x2700000 /firmware/rootfs.cpio.gz; fatsize ${OTA_partition} /firmware/rootfs.cpio.gz; else load ${boot_partition} 0x2700000 rootfs.cpio.gz;fatsize ${boot_partition} rootfs.cpio.gz;fi; \
+ setenv rootfs_size ${filesize}; \
+-if test -e ${OTA_partition} /firmware/xen; then load ${OTA_partition} 0x5E00000 /firmware/xen; else load ${boot_partition} 0x5E00000 xen;fi; \
+-if test -e ${OTA_partition} /firmware/system.dtb; then load ${OTA_partition} 0x6000000 /firmware/system.dtb;else load ${boot_partition} 0x6000000 system.dtb; fi; \
+-fdt addr 0x6000000; \
++if test -e ${OTA_partition} /firmware/xen; then load ${OTA_partition} 0x2400000 /firmware/xen; else load ${boot_partition} 0x2400000 xen;fi; \
++if test -e ${OTA_partition} /firmware/system.dtb; then load ${OTA_partition} 0x2600000 /firmware/system.dtb;else load ${boot_partition} 0x2600000 system.dtb; fi; \
++fdt addr 0x2600000; \
+ fdt resize 1024; \
+ fdt set /chosen \\\\#address-cells <0x2>; \
+ fdt set /chosen \\\\#size-cells <0x2>; \
+@@ -34,9 +34,9 @@ fdt set /chosen/dom0 reg <0x0 0xE00000 0
+ fdt set /chosen xen,dom0-bootargs \"console=hvc0 earlycon=xen earlyprintk=xen clk_ignore_unused root=/dev/ram0\";\
+ fdt mknod /chosen dom0-ramdisk;\
+ fdt set /chosen/dom0-ramdisk compatible  \"xen,linux-initrd\" \"xen,multiboot-module\" \"multiboot,module\";\
+-fdt set /chosen/dom0-ramdisk reg <0x0 0x2400000 0x0 0x${rootfs_size} >;\
++fdt set /chosen/dom0-ramdisk reg <0x0 0x2700000 0x0 0x${rootfs_size} >;\
+ setenv fdt_high 0xffffffffffffffff;\
+-booti 0x5E00000 - 0x6000000;"
++booti 0x2400000 - 0x2600000;"
+ 
+ #define CONFIG_CHECK_DOWNLOAD \
+ "setenv mbr_parts 'name=boot,start=0,size=512M,id=0x83; name=OTA,size=512M,id=0x83;name=rootfs,size=-,id=0x83';\

@@ -1,0 +1,24 @@
+#Note: Mention Each package in individual line
+#These packages will get added into rootfs menu entry
+
+CONFIG_gpio-demo
+CONFIG_peekpoke
+CONFIG_hello
+CONFIG_apps.rc
+CONFIG_wifi-amcm256sm
+CONFIG_brcm-patchram-plus
+CONFIG_pl-event
+
+#CONFIG_vitis-ai-library
+#CONFIG_vitis-ai-library-dev
+#CONFIG_vitis-ai-library-dbg
+
+CONFIG_logrotate
+CONFIG_gpsd
+
+CONFIG_l96
+CONFIG_ism303dac-accel
+CONFIG_witd
+CONFIG_wit-cli
+CONFIG_shared-mem
+CONFIG_simple-dcache

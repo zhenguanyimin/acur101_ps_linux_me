@@ -1,0 +1,5 @@
+build
+images
+petalinux-xen-fw.bin
+qflash_boot_cmd
+

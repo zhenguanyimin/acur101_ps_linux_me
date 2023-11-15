@@ -1,0 +1,506 @@
+/include/ "system-conf.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/pinctrl-zynqmp.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/*
+/ {
+	memory {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x5ffff000>;
+	};
+};
+
+&amba
+{
+	pl_shared_mem: shared-mem@60000000 {
+		compatible = "skyfend,shared-mem";
+		reg = <0x0 0x60000000 0x0 0x20000000>;
+
+		status = "okay";
+	};
+};
+*/
+
+
+&amba
+{
+	axi_uartlite_0: serial@80010000 {
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-uartlite-2.0", "xlnx,xps-uartlite-1.00.a";
+		current-speed = <115200>;
+		device_type = "serial";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+
+		interrupts = <0 96 1>;
+		port-number = <1>;
+		reg = <0x0 0x80010000 0x0 0x80>;
+		xlnx,baudrate = <0x1c200>;
+		xlnx,data-bits = <0x8>;
+		xlnx,odd-parity = <0x0>;
+		xlnx,s-axi-aclk-freq-hz-d = "99.999001";
+		xlnx,use-parity = <0x0>;
+
+		status = "disable";
+	};
+	axi_uartlite_1: serial@80010080 {
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-uartlite-2.0", "xlnx,xps-uartlite-1.00.a";
+		current-speed = <115200>;
+		device_type = "serial";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 94 1>;
+		port-number = <2>;
+		reg = <0x0 0x80010080 0x0 0x80>;
+		xlnx,baudrate = <0x1c200>;
+		xlnx,data-bits = <0x8>;
+		xlnx,odd-parity = <0x0>;
+		xlnx,s-axi-aclk-freq-hz-d = "99.999001";
+		xlnx,use-parity = <0x0>;
+
+		status = "disable";
+	};
+
+	axi_uartlite_2: serial@80010100 {
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-uartlite-2.0", "xlnx,xps-uartlite-1.00.a";
+		current-speed = <115200>;
+		device_type = "serial";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 95 1>;
+		port-number = <3>;
+		reg = <0x0 0x80010100 0x0 0x80>;
+		xlnx,baudrate = <0x1C200>;
+		xlnx,data-bits = <0x8>;
+		xlnx,odd-parity = <0x0>;
+		xlnx,s-axi-aclk-freq-hz-d = "99.999001";
+		xlnx,use-parity = <0x0>;
+
+		status = "disable";
+	};
+
+	axi_uartlite_3: serial@80010180 {
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-uartlite-2.0", "xlnx,xps-uartlite-1.00.a";
+		current-speed = <115200>;
+		device_type = "serial";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 89 1>;
+		port-number = <4>;
+		reg = <0x0 0x80010180 0x0 0x80>;
+		xlnx,baudrate = <0x1c200>;
+		xlnx,data-bits = <0x8>;
+		xlnx,odd-parity = <0x0>;
+		xlnx,s-axi-aclk-freq-hz-d = "99.999001";
+		xlnx,use-parity = <0x0>;
+
+		status = "disable";
+	};
+	axi_uartlite_4: serial@80010200 {
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-uartlite-2.0", "xlnx,xps-uartlite-1.00.a";
+		current-speed = <115200>;
+		device_type = "serial";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 90 1>;
+		port-number = <5>;
+		reg = <0x0 0x80010200 0x0 0x80>;
+		xlnx,baudrate = <0x1c200>;
+		xlnx,data-bits = <0x8>;
+		xlnx,odd-parity = <0x0>;
+		xlnx,s-axi-aclk-freq-hz-d = "99.999001";
+		xlnx,use-parity = <0x0>;
+
+		status = "disable";
+
+		l96: gnss { 
+			compatible = "quectel,l96";
+			on-gpios = <&tca9539_0 0 GPIO_ACTIVE_HIGH>;
+			reset-gpios = <&tca9539_0 1 GPIO_ACTIVE_LOW>;
+			timepulse-gpios = <&gpio 88 GPIO_ACTIVE_HIGH>;
+			current-speed = <9600>; 
+
+			status = "disable";
+		}; 
+	};
+};
+
+&flash0 {
+	compatible = "jedec,spi-nor";
+	#address-cells = <0x01>;
+	#size-cells = <0x1>;
+	reg = <0x0>;
+
+	spi-rx-bus-width = <0x04>;
+	spi-tx-bus-width = <0x01>;
+	spi-max-frequency = <5000000>;
+};
+
+&sdhci0 {
+	bus-width = <8>;
+	supports-emmc;
+	non-removeable;
+	
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+
+	tca9539_0: tca9539@74 {
+		compatible = "ti,tca9539";
+		reg=<0x74>;
+		gpio-controller;
+		#gpio-cells = <0x2>;
+		
+		status = "okay";
+	};
+
+	tmp75c: tmp75c@48 {
+		compatible = "ti,tmp75c";
+		reg=<0x48>;
+
+		staus = "okay";	
+	};
+};
+
+&i2c1 {
+	status = "okay";
+
+	tca9539_1: tca9539@74 {
+		compatible = "ti,tca9539";
+		reg=<0x74>;
+		gpio-controller;
+		#gpio-cells = <0x2>;
+		
+		status = "okay";
+	};
+};
+
+
+
+&gem3 {
+	phy-handle = <&ethphy0>;
+	phy-mode = "rgmii-id";
+	pinctrl-names = "default";
+
+	status = "okay";
+
+	mdio0: mdio@0 {
+	  reg = <0>;
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      status = "okay";
+      
+      ethphy0: ethernet-phy@5 {
+        reg = <0x5>;
+        tx-fifo-depth = <0x01>;
+        rx-fifo-depth = <0x01>;
+        ti,op-mode = <0x00>;
+        ti,max-output-impedance = "true";
+        ti,clk-output-sel = <0x0c>;
+        rx-internal-delay-ps = <2000>;
+        tx-internal-delay-ps = <2000>;
+        //enet-phy-lane-swap = "true";
+
+        status = "okay";
+      };
+    };
+
+};
+
+/{
+
+    sdhci1_pwrseq: sdhci1-pwrseq {
+      compatible = "mmc-pwrseq-simple";
+      reset-gpios = <&tca9539_1 13 GPIO_ACTIVE_LOW>;
+      post-power-on-delay-ms = <100>;
+      power-off-delay-us = <100000>;
+    };
+};
+
+&sdhci1 {
+	status = "okay";
+
+	max-frequency = <50000000>;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+	no-1-8-v; 
+	cap-power-off-card;
+	bus-width = <4>;
+	
+    non-removeable;
+    broken-cd;
+    mmc-pwrseq = <&sdhci1_pwrseq>;
+
+    sd-uhs-sdr12;
+    sd-uhs-sdr25;
+    sd-uhs-sdr50;
+    sd-uhs-sdr104;
+    sd-uhs-ddr50;
+
+	brcmf: brcmf@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
+
+		status = "okay";
+	};
+};
+
+/{
+	TUSB1210_usb0phy: ulpi-usb0-phy {
+		compatible = "ulpi-phy";
+		///reset-gpios = <&tca9539_1 3 GPIO_ACTIVE_LOW>;
+		#phy-cells = <0>;
+		reg = <0x0 0xfe200000 0x0 0x40000>;
+		view-port = <0xC280>;
+		///drv-vbus;
+	};
+};
+
+&usb0 {
+	status = "okay";
+
+	//usb-phy;
+	phy_type = "ulpi";
+	phy-names = "TUSB1210_usb0phy";
+	phys = <&TUSB1210_usb0phy>;
+};
+
+&dwc3_0 {
+	status = "okay";
+	dr_mode = "host";
+	snps,usb3_lpm_capable;
+	maximum-speed = "high-speed";
+};
+
+&TUSB1210_usb0phy {
+	status = "okay";
+};
+
+/{
+    rgb_led0: rgb-led0 {
+        compatible = "gpio-leds";
+        color = <LED_COLOR_ID_RGB>;
+        function = LED_FUNCTION_STATUS;
+        default-state = "off";
+        
+        led-0 {
+            gpios = <&gpio 38 GPIO_ACTIVE_HIGH>;
+            color = <LED_COLOR_ID_RED>;
+        };
+
+        led-1 {
+            gpios = <&gpio 39 GPIO_ACTIVE_HIGH>;
+            color = <LED_COLOR_ID_BLUE>;
+        };
+
+        led-2 {
+            gpios = <&gpio 40 GPIO_ACTIVE_HIGH>;
+            color = <LED_COLOR_ID_GREEN>;
+        };
+    };
+
+    rgb_led1: rgb-led1 {
+    compatible = "gpio-leds";
+    color = <LED_COLOR_ID_RGB>;
+    function = LED_FUNCTION_STATUS;
+    default-state = "off";
+
+	    led-0 {
+	        gpios = <&gpio 41 GPIO_ACTIVE_HIGH>;
+	        color = <LED_COLOR_ID_RED>;
+	    };
+
+	    led-1 {
+	        gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+	        color = <LED_COLOR_ID_BLUE>;
+	    };
+
+	    led-2 {
+	        gpios = <&gpio 43 GPIO_ACTIVE_HIGH>;
+	        color = <LED_COLOR_ID_GREEN>;
+    };
+};
+};
+
+&rgb_led0 {
+	status = "okay";
+};
+
+&rgb_led1 {
+	status = "okay";
+};
+
+/{
+	rdmap_irq_event {
+		compatible = "skyfend,pl-event";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 109 1>;
+
+		status = "okay";
+	};
+
+	cpib_event {
+		compatible = "skyfend,pl-event";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 110 1>;
+		
+		status = "okay";
+	};
+
+	adc_irq_event {
+		compatible = "skyfend,pl-event";
+		interrupt-names = "interrupt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 111 1>;
+		
+		status = "okay";
+	};
+};
+
+&pinctrl0 {
+	status = "okay";
+
+	pinctrl_spi0_default: spi0-default {
+		mux {
+			groups = "spi0_2_grp";
+			function = "spi0";
+		};
+
+		conf {
+			groups = "spi0_2_grp";
+			bias-disable;
+			slew-rate = <SLEW_RATE_SLOW>;
+			power-source = <IO_STANDARD_LVCMOS18>;
+		};
+
+		mux-cs {
+			groups = "spi0_ss_9_grp";
+			function = "spi0_ss";
+		};
+
+		conf-cs {
+			groups = "spi0_ss_9_grp";
+			bias-disable;
+		};
+
+	};
+};
+
+&spi0 {
+	//cs-gpios = <&gpio 29 GPIO_ACTIVE_LOW>;
+	num-cs = <1>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_spi0_default>;
+	status = "okay";
+
+	gyro: I3G4250D@0 {
+		compatible = "st,l3g4200d-gyro";
+		st,drdy-int-pin = <2>;
+		reg = <0>;
+
+		spi-max-frequency = <6000000>;
+		spi-cpha;
+		spi-cpol;
+
+		status = "okay";
+	};
+};
+
+/{
+	axi_iic_3: i2c@80040000 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clock-names = "s_axi_aclk";
+		clocks = <&zynqmp_clk 71>;
+		compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.00.a";
+		interrupt-names = "iic2intc_irpt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 104 4>;
+		reg = <0x0 0x80040000 0x0 0x10000>;
+
+		status = "disable";
+
+		imu_accel: lsm303ah-accel@1D {
+			compatible = "st,lsm303ah_accel";
+			reg = <0x1D>;
+
+			st,drdy-int-pin = <1>;
+			interrupt-parent = <&gpio>;
+        	interrupts = <86 IRQ_TYPE_EDGE_RISING>, <87 IRQ_TYPE_EDGE_RISING>;
+
+			status = "disable";
+		};
+
+		imu_magn: lsm303ah-magn@1E {
+			compatible = "st,lsm303agr-magn";
+			reg = <0x1E>;
+
+			st,drdy-int-pin = <1>;
+			interrupt-parent = <&gpio>;
+        	interrupts = <96 IRQ_TYPE_EDGE_RISING>;
+
+			status = "disable";
+		};
+	};
+	
+	axi_iic_0: i2c@80010280 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				clock-names = "s_axi_aclk";
+				clocks = <&zynqmp_clk 71>;
+				compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.00.a";
+				interrupt-names = "iic2intc_irpt";
+				interrupt-parent = <&gic>;
+				interrupts = <0 106 4>;
+				reg = <0x0 0x80010280 0x0 0x80>;
+
+		status = "disable";
+	};
+	axi_iic_1: i2c@80000000 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				clock-names = "s_axi_aclk";
+				clocks = <&zynqmp_clk 71>;
+				compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.00.a";
+				interrupt-names = "iic2intc_irpt";
+				interrupt-parent = <&gic>;
+				interrupts = <0 107 4>;
+				reg = <0x0 0x80000000 0x0 0x10000>;
+
+		status = "disable";
+	};
+	axi_iic_2: i2c@80030000 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				clock-names = "s_axi_aclk";
+				clocks = <&zynqmp_clk 71>;
+				compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.00.a";
+				clock-frequency = <100000>;
+				interrupt-names = "iic2intc_irpt";
+				interrupt-parent = <&gic>;
+				interrupts = <0 105 4>;
+				reg = <0x0 0x80030000 0x0 0x10000>;
+
+		status = "disable";
+	};
+};
+

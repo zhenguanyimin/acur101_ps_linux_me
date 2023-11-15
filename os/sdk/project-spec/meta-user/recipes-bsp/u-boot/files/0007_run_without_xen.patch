@@ -1,0 +1,51 @@
+diff -upNr git_old/include/env_default.h git/include/env_default.h
+--- git_old/include/env_default.h	2023-06-20 18:35:56.561296117 +0800
++++ git/include/env_default.h	2023-06-20 18:52:12.423545255 +0800
+@@ -18,25 +18,11 @@
+ #define CONFIG_OTA_PARTITION  "mmc 0:2"
+ #define CONFIG_UPDATE_SYSTEM \
+ "if test -e ${OTA_partition} /firmware/Image; then load ${OTA_partition} 0xE00000 /firmware/Image; fatsize ${OTA_partition} /firmware/Image; else load ${boot_partition} 0xE00000 Image;fatsize ${boot_partition} Image;fi; \
+-setenv Image_size ${filesize}; \
+ if test -e ${OTA_partition} /firmware/rootfs.cpio.gz;then load ${OTA_partition} 0x2700000 /firmware/rootfs.cpio.gz; fatsize ${OTA_partition} /firmware/rootfs.cpio.gz; else load ${boot_partition} 0x2700000 rootfs.cpio.gz;fatsize ${boot_partition} rootfs.cpio.gz;fi; \
+ setenv rootfs_size ${filesize}; \
+-if test -e ${OTA_partition} /firmware/xen; then load ${OTA_partition} 0x2400000 /firmware/xen; else load ${boot_partition} 0x2400000 xen;fi; \
+ if test -e ${OTA_partition} /firmware/system.dtb; then load ${OTA_partition} 0x2600000 /firmware/system.dtb;else load ${boot_partition} 0x2600000 system.dtb; fi; \
+-fdt addr 0x2600000; \
+-fdt resize 1024; \
+-fdt set /chosen \\\\#address-cells <0x2>; \
+-fdt set /chosen \\\\#size-cells <0x2>; \
+-fdt set /chosen xen,xen-bootargs \"console=dtuart dtuart=serial0 dom0_mem=1024M dom0_max_vcpus=1 bootscrub=0 vwfi=native sched=null  \"; \
+-fdt mknod /chosen dom0; \
+-fdt set /chosen/dom0 compatible  \"xen,linux-zimage\" \"xen,multiboot-module\" \"multiboot,module\"; \
+-fdt set /chosen/dom0 reg <0x0 0xE00000 0x0 0x${Image_size} >;\
+-fdt set /chosen xen,dom0-bootargs \"console=hvc0 earlycon=xen earlyprintk=xen clk_ignore_unused root=/dev/ram0\";\
+-fdt mknod /chosen dom0-ramdisk;\
+-fdt set /chosen/dom0-ramdisk compatible  \"xen,linux-initrd\" \"xen,multiboot-module\" \"multiboot,module\";\
+-fdt set /chosen/dom0-ramdisk reg <0x0 0x2700000 0x0 0x${rootfs_size} >;\
+-setenv fdt_high 0xffffffffffffffff;\
+-booti 0x2400000 - 0x2600000;"
++setenv bootargs \" earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0\"; \
++booti 0xE00000 0x2700000:0x${rootfs_size} 0x2600000;"
+ 
+ #define CONFIG_CHECK_DOWNLOAD \
+ "setenv mbr_parts 'name=boot,start=0,size=512M,id=0x83; name=OTA,size=512M,id=0x83;name=rootfs,size=-,id=0x83';\
+@@ -49,7 +35,7 @@ fi;\
+ fi;\
+ fi;\
+ if test -e ${OTA_partition} download.flag; then setenv download 1;else setenv download 0; fi;\
+-if fatinfo ${boot_partition} && test -e ${boot_partition} boot.scr && test -e ${boot_partition} xen && test -e ${boot_partition} system.dtb && test -e ${boot_partition} Image; \
++if fatinfo ${boot_partition} && test -e ${boot_partition} boot.scr && test -e ${boot_partition} system.dtb && test -e ${boot_partition} Image; \
+ then echo system file OK; else echo system file lost, start download...;setenv download 1;fi;\
+ if test -e ${OTA_partition} update.flag; then fatrm ${OTA_partition} download.flag; echo run update;run update_system;fi;\
+ if test -e ${OTA_partition} download.flag; then setenv download 1;setenv autoload 0;fi; if test ${download} -eq 1; then dhcp;fi;\
+@@ -160,10 +146,6 @@ const char default_environment[] = {
+ #ifdef	CONFIG_EXTRA_ENV_SETTINGS
+ 	CONFIG_EXTRA_ENV_SETTINGS
+ #endif
+-	"ipaddr="         CONFIG_IPADDR         "\0"
+-	"netmask="        CONFIG_NETMASK        "\0"
+-	"gatewayip="      CONFIG_GATEWAYIP      "\0"
+-	"serverip="       CONFIG_SERVERIP       "\0"
+ 	"boot_partition=" CONFIG_BOOT_PARTITION "\0"
+ 	"OTA_partition="  CONFIG_OTA_PARTITION  "\0"
+ 	"update_system="  CONFIG_UPDATE_SYSTEM  "\0"

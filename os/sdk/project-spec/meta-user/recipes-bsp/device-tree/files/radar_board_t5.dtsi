@@ -1,0 +1,13 @@
+
+/include/ "system-user.dtsi"
+
+
+
+&TUSB1210_usb0phy {
+	status = "okay";
+	cs-gpios = <&gpio 32 GPIO_ACTIVE_HIGH>;//default is high
+	reset-gpios = <&gpio 35 GPIO_ACTIVE_LOW>;
+};
+
+
+

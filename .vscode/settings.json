@@ -1,0 +1,19 @@
+{
+    "files.associations": {
+        "detection_interface.h": "c",
+        "pil.h": "c",
+        "radar_common.h": "c",
+        "alink.h": "c",
+        "alink_pil.h": "c",
+        "version.h": "c",
+        "data_path.h": "c",
+        "tracking_interface.h": "c",
+        "protocol_if.h": "c",
+        "common_struct.h": "c",
+        "alg_init.h": "c",
+        "object_struct.h": "c",
+        "radar_error.h": "c",
+        "radar_defines.h": "c",
+        "radar_utils.h": "c"
+    }
+}

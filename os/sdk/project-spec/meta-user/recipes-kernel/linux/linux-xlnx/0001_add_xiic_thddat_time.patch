@@ -1,0 +1,34 @@
+diff -upNr old/drivers/i2c/busses/i2c-xiic.c kernel-source/drivers/i2c/busses/i2c-xiic.c
+--- old/drivers/i2c/busses/i2c-xiic.c	2023-08-08 17:10:58.900564849 +0800
++++ kernel-source/drivers/i2c/busses/i2c-xiic.c	2023-08-08 17:11:49.785365154 +0800
+@@ -110,6 +110,7 @@ struct timing_regs {
+ 	unsigned int thdsta;
+ 	unsigned int tsudat;
+ 	unsigned int tbuf;
++	unsigned int thddat;
+ };
+ 
+ #define XIIC_MSB_OFFSET 0
+@@ -1186,9 +1187,9 @@ enum i2c_scl_freq {
+ 
+ /* Reg values in ns derived from I2C spec and AXI I2C PG for different frequencies */
+ static const struct timing_regs timing_reg_values[] = {
+-	{ 5700, 5000, 4300, 550, 5000 }, /* Reg values for 100KHz */
+-	{ 900, 900, 900, 400, 1600 },    /* Reg values for 400KHz */
+-	{ 380, 380, 380, 170, 620 },     /* Reg values for 1MHz   */
++	{ 5700, 5000, 4300, 550, 5000, 2500 }, /* Reg values for 100KHz */
++	{ 900, 900, 900, 400, 1600, 625 },    /* Reg values for 400KHz */
++	{ 380, 380, 380, 170, 620, 250 },     /* Reg values for 1MHz   */
+ };
+ 
+ /**
+@@ -1272,7 +1273,8 @@ static int xiic_setclk(struct xiic_i2c *
+ 	xiic_setreg32(i2c, XIIC_TBUF_REG_OFFSET, reg_val - 1);
+ 
+ 	/* THDDAT */
+-	xiic_setreg32(i2c, XIIC_THDDAT_REG_OFFSET, 1);
++	reg_val = (timing_reg_values[index].tbuf * clk_in_mhz) / 1000;
++	xiic_setreg32(i2c, XIIC_THDDAT_REG_OFFSET, reg_val - 1);
+ 
+ 	return 0;
+ }

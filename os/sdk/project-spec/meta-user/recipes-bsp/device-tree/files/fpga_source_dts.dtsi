@@ -1,0 +1,106 @@
+/*
+ * CAUTION: This file is created by developer.
+ * Version: V1.1 
+ * Today is: 2023.09.22 
+ * description:
+ *		this file include all resources which is provided by fpga.
+ * 		we load system in this way:
+ *		bootloader --> kernel --> application auto script(rc.local) --> fpga --> appllication.
+ *		cause some resource provided by fpga, such as uart/i2c, before we use those resource in application or initialize these dirver, we should
+ *		make those resource getting ready in fpga, so we load those resource in kernel after fpga loaded. currentlly we use fpgautil to load thos
+ *		those resources.
+ *      this file is defined by different hardware board. when upgrade the board, resources may should be changed over here.
+ */
+
+/dts-v1/;
+/plugin/;
+/ {
+	fragment@0 {
+		target = <&axi_uartlite_0>;
+		
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&axi_uartlite_1>;
+		
+		__overlay__ {
+			status = "okay";
+		};
+	};
+	
+	fragment@2 {
+		target = <&axi_uartlite_2>;
+		
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@3 {
+		target = <&axi_uartlite_3>;
+		
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@4 {
+		target = <&axi_uartlite_4>;
+		
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@5 {
+		target = <&axi_iic_3>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@6 {
+		target = <&imu_accel>;
+
+		__overlay__ {
+#if RADAR_BOARD_T5
+		status = "disabled";
+#else
+		status = "okay";
+#endif
+		};
+	};
+
+	fragment@7 {
+		target = <&imu_magn>;
+
+		__overlay__ {
+#if RADAR_BOARD_T5
+		status = "disabled";
+#else
+			status = "okay";
+#endif
+		};
+	};
+
+	fragment@8 {
+		target = <&l96>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+	
+	fragment@9 {
+		target = <&axi_iic_2>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+};
+
